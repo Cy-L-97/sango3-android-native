@@ -145,6 +145,113 @@ S3Ini *s3_ini_parse(const unsigned char *data, size_t n) {
     return ini;
 }
 
+/* ------------------------------------------------ #include 预处理（M2 UI 布局） */
+#define S3_INI_INCLUDE_DEPTH_MAX 8
+
+typedef struct { unsigned char *p; size_t n, cap; } IncBuf;
+
+static int incbuf_reserve(IncBuf *b, size_t extra) {
+    if (b->n + extra <= b->cap) return 0;
+    size_t nc = b->cap ? b->cap : 4096;
+    while (nc < b->n + extra) nc *= 2;
+    unsigned char *np = (unsigned char *)realloc(b->p, nc);
+    if (!np) return -1;
+    b->p = np; b->cap = nc;
+    return 0;
+}
+static int incbuf_append(IncBuf *b, const void *d, size_t n) {
+    if (!n) return 0;
+    if (incbuf_reserve(b, n) != 0) return -1;
+    memcpy(b->p + b->n, d, n);
+    b->n += n;
+    return 0;
+}
+
+static int is_space_ch(unsigned char c) { return c == ' ' || c == '\t' || c == '\r'; }
+
+/* 逐行扫描：#include 行替换为被包含文件内容（递归）；其余原样保留（含换行）。 */
+static int expand_includes(const unsigned char *data, size_t n, S3IniIncludeCb cb,
+                           void *ud, int depth, IncBuf *out) {
+    if (!cb || depth >= S3_INI_INCLUDE_DEPTH_MAX) return incbuf_append(out, data, n);
+    size_t i = 0;
+    while (i < n) {
+        size_t j = i;
+        while (j < n && data[j] != '\n') ++j;
+        size_t s = i;
+        while (s < j && is_space_ch(data[s])) ++s;
+
+        int is_inc = 0;
+        if (j > s && data[s] == '#') {
+            static const char KW[] = "#include";
+            const size_t KL = sizeof(KW) - 1;
+            if (j - s >= KL + 1 && memcmp(data + s, KW, KL) == 0) is_inc = 1;
+        }
+        if (is_inc) {
+            size_t fs = s + 8, fe = j;              /* 8 = strlen("#include") */
+            while (fs < fe && is_space_ch(data[fs])) ++fs;
+            while (fe > fs && is_space_ch(data[fe - 1])) --fe;
+            if (fe > fs && data[fs] == '"') {        /* 允许 #include "x.ini" */
+                ++fs;
+                if (fe > fs && data[fe - 1] == '"') --fe;
+            }
+            if (fe > fs) {
+                char name[512];
+                size_t nl = fe - fs;
+                if (nl > sizeof(name) - 1) nl = sizeof(name) - 1;
+                memcpy(name, data + fs, nl);
+                name[nl] = '\0';
+                unsigned char *sub = NULL; size_t subn = 0;
+                if (cb(name, &sub, &subn, ud) == 0 && sub && subn) {
+                    expand_includes(sub, subn, cb, ud, depth + 1, out);
+                    free(sub);
+                    i = (j < n) ? j + 1 : n;         /* include 行本身不保留 */
+                    continue;
+                }
+                if (sub) free(sub);
+            }
+        }
+        size_t copy_len = (j < n) ? (j - i + 1) : (n - i);
+        if (incbuf_append(out, data + i, copy_len) != 0) return -1;
+        i = (j < n) ? j + 1 : n;
+    }
+    return 0;
+}
+
+S3Ini *s3_ini_parse_inc(const unsigned char *data, size_t n, S3IniIncludeCb cb, void *ud) {
+    if (!data) return NULL;
+    if (!cb) return s3_ini_parse(data, n);
+    IncBuf b; b.p = NULL; b.n = 0; b.cap = 0;
+    if (expand_includes(data, n, cb, ud, 0, &b) != 0) { free(b.p); return NULL; }
+    S3Ini *ini = s3_ini_parse(b.p, b.n);
+    free(b.p);
+    return ini;
+}
+
+static unsigned char *read_all_bytes(const char *path, size_t *out_n) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    long sz = ftell(f);
+    if (sz <= 0) { fclose(f); return NULL; }
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
+    unsigned char *buf = (unsigned char *)malloc((size_t)sz);
+    if (!buf) { fclose(f); return NULL; }
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    if (got != (size_t)sz) { free(buf); return NULL; }
+    *out_n = got;
+    return buf;
+}
+
+S3Ini *s3_ini_load_inc(const char *path, S3IniIncludeCb cb, void *ud) {
+    size_t n = 0;
+    unsigned char *buf = read_all_bytes(path, &n);
+    if (!buf) return NULL;
+    S3Ini *ini = s3_ini_parse_inc(buf, n, cb, ud);
+    free(buf);
+    return ini;
+}
+
 S3Ini *s3_ini_load(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;

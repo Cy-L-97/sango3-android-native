@@ -37,6 +37,7 @@ target_include_directories(sango3_render PUBLIC src)
 add_library(sango3_game STATIC
   src/text.c
   src/ini.c
+  src/ui.c
   src/rng.c
   src/gamedata.c)
 target_include_directories(sango3_game PUBLIC src)
@@ -62,7 +63,11 @@ target_link_libraries(sango3scene PRIVATE sango3_data sango3_render)
 add_executable(sango3data src/gamedata_probe.c)
 target_link_libraries(sango3data PRIVATE sango3_game)
 
-set_target_properties(sango3pak sango3shp sango3view sango3scene sango3data PROPERTIES
+# UI 布局解析验证器（M2：Menu.ini → 控件/图标/配色，含 #include 展开）
+add_executable(sango3ui src/ui_probe.c)
+target_link_libraries(sango3ui PRIVATE sango3_game sango3_data)
+
+set_target_properties(sango3pak sango3shp sango3view sango3scene sango3data sango3ui PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # ---------------------------------------------------------------- SDL2（可选）

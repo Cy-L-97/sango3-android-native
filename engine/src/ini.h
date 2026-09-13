@@ -42,6 +42,21 @@ S3Ini *s3_ini_load(const char *path);
 S3Ini *s3_ini_parse(const unsigned char *data, size_t n);
 void   s3_ini_free(S3Ini *ini);
 
+/* ------------------------------------------------------ #include 预处理（M2） */
+/* 原版 Menu.ini 首行是 `#include define.ini`：被包含文件同样在 PAK 内（或磁盘上），
+ * 具体取法只有调用方知道，因此用回调注入。
+ *   回调返回 0 表示成功，*out_data 由回调 malloc，解析器负责 free。
+ * 展开在**字节层面**进行（被包含文件同样是 Big5），展开完再统一解码，
+ * 这样与「先解码再切行」的整体口径一致，也避免尾字节误判。
+ * 递归深度上限 8，防御循环包含。 */
+typedef int (*S3IniIncludeCb)(const char *name, unsigned char **out_data,
+                              size_t *out_n, void *ud);
+
+/* 解析并展开 #include（cb == NULL 时行为同 s3_ini_parse） */
+S3Ini *s3_ini_parse_inc(const unsigned char *data, size_t n, S3IniIncludeCb cb, void *ud);
+/* 从磁盘路径载入并展开 #include（被包含文件按相对同目录解析，由回调决定） */
+S3Ini *s3_ini_load_inc(const char *path, S3IniIncludeCb cb, void *ud);
+
 /* 取第 idx 个同名 section（找不到返回 NULL） */
 const S3IniSection *s3_ini_section_at(const S3Ini *ini, const char *name, int idx);
 /* 取第一个同名 section */
