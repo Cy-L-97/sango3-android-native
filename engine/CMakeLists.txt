@@ -25,6 +25,12 @@ add_library(sango3_data STATIC
 
 target_include_directories(sango3_data PUBLIC src)
 
+# ------------------------------------------------------- 渲染层（分辨率无关）
+# 逻辑坐标 640×480 ↔ 物理分辨率（1080p/2K/4K）的变换、滤镜、素材分级选档。
+# 纯计算，不依赖 SDL / OpenGL，便于离线出图做像素级校验。
+add_library(sango3_render STATIC src/render.c)
+target_include_directories(sango3_render PUBLIC src)
+
 # ---------------------------------------------------------------- 工具与可执行
 # PAK 容器检查器
 add_executable(sango3pak src/pak_lister.c)
@@ -38,7 +44,11 @@ target_link_libraries(sango3shp PRIVATE sango3_data)
 add_executable(sango3view src/sango3view.c)
 target_link_libraries(sango3view PRIVATE sango3_data)
 
-set_target_properties(sango3pak sango3shp sango3view PROPERTIES
+# 分辨率无关渲染演示（同一逻辑场景 → 1080p / 2K / 4K，含滤镜对比）
+add_executable(sango3scene src/sango3scene.c)
+target_link_libraries(sango3scene PRIVATE sango3_data sango3_render)
+
+set_target_properties(sango3pak sango3shp sango3view sango3scene PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # ---------------------------------------------------------------- SDL2（可选）

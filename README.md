@@ -19,11 +19,34 @@
 | 2 | 士兵上限 400 → 1000 | 引擎配置常量 |
 | 3 | 必杀技携带数无限制 | 自建技能数据结构，不受原版位掩码限制 |
 | 4 | 我方武力≥80 自动学习必杀技 | 学习规则为自写判断逻辑 |
-| 5 | 素材高清化 | 引擎原生高分辨率渲染 + AI 超分管线 |
+| 5 | 素材高清化 | 素材分级替换（1×/2×/3×/4×），引擎自动选档 |
+
+## 关键事实基线（实测，非推测）
+
+| 项 | 结论 |
+|---|---|
+| 逻辑坐标空间 | **640×480**（`Menu.ini` 根窗口 `Range=0,0,640,480`），且与素材像素 **1:1** |
+| 分辨率配置 | 数据层**不存在** —— 原版硬编码在 exe 内，我们可自由定义 |
+| PAK 格式 | `PAKS` + 64 字节定长索引；Sango3.PAK 24,477 条素材 / Update.PAK 87 条数据与脚本 |
+| SHP 格式 | `TLHS` + 帧偏移表 + **RGB565 直色**（无调色板） |
+| 规则数据 | 全在可解包的 Big5 INI 里：421 武将 / 9 兵种 / 125 武将技 / 103 物品 |
+| 必杀技 | `SuperAttack` 字段取值 1~8（原版数据本身存过多个，如吕布 `5,8`） |
+| 士兵上限 400 | **不在**任何数据文件里（`Thing.ini` 的 `Count=400` 是物品数量），属 exe 硬编码 → 我们自己的引擎里就是一个变量 |
+| 素材覆盖机制 | 游戏优先读根目录外置 `Setting\` 与 `Shape\`（第三方"修复+增强补丁"已实证生效） |
+
+## 分辨率与高清化
+
+**交付标准：最低 2K（2560×1440），设计上限 4K。** 完整规范见 **[`docs/分辨率与高清化架构.md`](docs/分辨率与高清化架构.md)**。
+
+三条铁律：
+1. 玩法逻辑 / UI 布局 / 点击命中一律用 **640×480 逻辑坐标**，代码里不出现物理像素常量；
+2. 物理分辨率只出现在视口变换层（`engine/src/render.c`）；
+3. 素材按 `1×/2×/3×/4×` 分级，引擎按输出分辨率自动选档 —— **高清化因此是一次纯资源替换，不动代码**。
 
 ## 技术栈
 
-C++20 · SDL2 · OpenGL ES 3.0 · CMake · Android NDK（一套代码：Windows 调试版 + Android 交付版）
+C11（数据层 / 渲染核心）+ C++17（游戏逻辑）· SDL2 · CMake + Ninja + MSVC · 目标 Android NDK
+（一套代码：Windows 调试版 + Android 交付版）
 
 辅助：Ghidra（逆向参考原版逻辑）· SangoExplorer / RPGViewer（素材格式对照）· Real-ESRGAN（素材超分）
 
@@ -31,14 +54,33 @@ C++20 · SDL2 · OpenGL ES 3.0 · CMake · Android NDK（一套代码：Windows 
 
 ```
 /                     项目根
-├── docs/             方案文档、技术笔记、逆向记录
-├── engine/           引擎核心（资源/渲染/音频/输入）
-├── game/             游戏逻辑（内政/大地图/战斗/AI）
-├── tools/            离线工具（PAK 解包、素材超分、数据表转换）
+├── docs/             方案文档、技术笔记（★ 分辨率与高清化架构.md）
+├── engine/           引擎核心
+│   ├── CMakeLists.txt
+│   └── src/          pak.c pak.h · shp.c shp.h · render.c render.h · 各验证工具
+├── tools/            离线工具（PAK 解包、数据表转换、素材导出、构建脚本）
+├── build/pc/bin/     构建产物（不入库）
+├── third_party/      依赖（SDL2，由 tools/setup_sdl.py 部署，不入库）
 └── .workbuddy/       项目记忆（进度日志，随仓库同步）
 ```
 
-**注意**：`game/` 目录名与 .gitignore 中的原版素材目录同名冲突风险 —— 后续落地时以 `src/game/` 存放代码，原版素材一律放在仓库外并用配置指向。
+## 常用命令
+
+```bash
+# 构建（CMake + Ninja + MSVC，封装了"无 vcvars"环境构造）
+python tools/build_pc.py
+python tools/build_pc.py --reconfigure     # CMake 结构变更后
+
+# 依赖部署（换机器时执行一次）
+python tools/fetch_sdl.py && python tools/setup_sdl.py
+
+# 数据字典（从本机正版重新生成）
+python tools/build_data.py
+
+# 出图验证
+python tools/render_gallery.py    # M0 素材图库（617 张）
+python tools/render_scene.py      # 分辨率矩阵：640×480 / 1080p / 2K / 4K × 三种滤镜
+```
 
 ## 双机开发（周末台式机 + 工作日笔记本）
 
@@ -53,5 +95,8 @@ C++20 · SDL2 · OpenGL ES 3.0 · CMake · Android NDK（一套代码：Windows 
 - [x] 可行性评估（v1 兼容层方案 → 已否决）
 - [x] 原生方案 v2 定稿
 - [x] 路线确认：A → B 递进
-- [x] Git 仓库初始化（等待绑定远端）
-- [ ] A 档 M0：资源管线（PAK/SHP 解析 + 渲染验证原型）
+- [x] Git 仓库初始化（等待绑定远端 —— GitHub 网络待用户恢复）
+- [x] 工具链打通（VS Build Tools 2022 + CMake + Ninja + SDL2）
+- [x] A 档 M0：资源管线（PAK / SHP / 数据表 / 字节码格式全部破解；617 张素材解码验证）
+- [ ] A 档 M1：引擎骨架（数据层 ✅ / 分辨率无关渲染核心 ✅ / 窗口程序 → 进行中）
+- [ ] A 档 M2~M5：内政 → 战斗 → 安卓 → 五项定制

@@ -68,7 +68,7 @@
   <table>
     <tr><th>模块</th><th>职责</th><th>难点</th></tr>
     <tr><td>资源加载</td><td>解析 <code>sango3.pak</code> / <code>Update.pak</code>、SHP 精灵动画、调色板、字体、音频</td><td><span class="tag t-ok">低</span> 社区格式资料齐全，SangoExplorer 可交叉验证</td></tr>
-    <tr><td>渲染</td><td>2D 批渲染，虚拟 800×600 逻辑坐标系，任意分辨率缩放（原生高清的基础）</td><td><span class="tag t-ok">低</span></td></tr>
+    <tr><td>渲染</td><td>2D 批渲染，<b>逻辑坐标 640×480 与物理分辨率解耦</b>：最低支持 2K（2560×1440），设计上限 4K；素材按 1×/2×/3× 分级替换即原生高清</td><td><span class="tag t-ok">低</span></td></tr>
     <tr><td>数据层</td><td>武将/物品/兵种/技能/剧本 全部从原版 INI 数据表读取（规则数据零猜测）</td><td><span class="tag t-ok">低</span></td></tr>
     <tr><td>大地图 & 内政</td><td>回合制内政、城池经营、人事/军事/外交指令、武将升迁</td><td><span class="tag t-mid">中</span> 界面多但逻辑直白</td></tr>
     <tr><td><b>战斗系统</b></td><td>战棋行军 + 百人战实时战斗、武将技/必杀技演出、兵种克制、战斗 AI</td><td><span class="tag t-hard">高</span> 全项目最大难点，需结合逆向 exe 提取真实规则与数值，再行为校准</td></tr>
