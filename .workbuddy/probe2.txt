@@ -1,0 +1,2 @@
+py_exit=0
+10 probe2.txt
