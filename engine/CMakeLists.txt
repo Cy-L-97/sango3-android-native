@@ -84,8 +84,32 @@ else()
 endif()
 
 if(SANGO3_HAVE_SDL)
+  # GPU 呈现器（M1-b 路径 A）：逻辑画布作为静态纹理上传，开物理分辨率窗口，
+  # 由 GPU 按宽高比/滤镜缩放显示，并支持拖动缩放。依赖 SDL + 分辨率无关渲染层。
+  # font.c 为 TTF 字体渲染层（M1-b 字体显示），随下面 SDL2_ttf 检测结果编译真实/降级实现。
+  add_library(sango3_present STATIC src/presenter.c src/font.c)
+  target_link_libraries(sango3_present PUBLIC sango3_sdl sango3_render)
+
+  # SDL2_ttf（字体渲染，独立扩展库）：存在即启用字体显示层（含像素/高清双模式 + 回退链）。
+  set(SANGO3_SDL2_TTF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/SDL2_ttf")
+  if(EXISTS "${SANGO3_SDL2_TTF_DIR}/include/SDL_ttf.h")
+    message(STATUS "SDL2_ttf found: ${SANGO3_SDL2_TTF_DIR}")
+    target_include_directories(sango3_present PUBLIC "${SANGO3_SDL2_TTF_DIR}/include")
+    target_link_libraries(sango3_present PUBLIC "${SANGO3_SDL2_TTF_DIR}/lib/x64/SDL2_ttf.lib")
+    target_compile_definitions(sango3_present PUBLIC SANGO3_HAVE_TTF=1)
+    set(SANGO3_HAVE_TTF TRUE)
+    # 复制 SDL2_ttf.dll 到产物目录
+    add_custom_command(TARGET sango3view POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              "${SANGO3_SDL2_TTF_DIR}/lib/x64/SDL2_ttf.dll"
+              "$<TARGET_FILE_DIR:sango3view>/SDL2_ttf.dll")
+  else()
+    message(STATUS "SDL2_ttf not found at ${SANGO3_SDL2_TTF_DIR} — building without font rendering")
+    set(SANGO3_HAVE_TTF FALSE)
+  endif()
+
   target_sources(sango3view PRIVATE src/sango3view_sdl.c)
-  target_link_libraries(sango3view PRIVATE sango3_sdl)
+  target_link_libraries(sango3view PRIVATE sango3_sdl sango3_present)
   # 把 SDL2.dll 复制到产物目录，保证可执行文件能直接运行
   add_custom_command(TARGET sango3view POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

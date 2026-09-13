@@ -2,14 +2,17 @@
 
 ## 路线
 A→B 递进：A 档（2~4 周 demo 级原生原型）→ B 档（4~6 月忠实还原）。
-**当前进度**：M1-a（C 引擎数据层）完成。
+**当前进度**：M1-b（GPU 化渲染 + SDL_ttf 字体显示层）完成。
 
 ## A 档里程碑
 - **M0**（已完）格式破解 + 分辨率无关渲染骨架
 - **M1-a**（已完）数据层 + 规则引擎
   - 421 武将 / 103 物品 / 9 兵种 / 125 武将技，**9024 项字段级 C 与 Python 完全一致**
   - 见 `tools/verify_data_c.py`（任何改动后必跑）
-- **M1-b**（待）GPU 化渲染（OGLES/OpenGL ES2/3）+ SDL_ttf 集成显示层
+- **M1-b**（进行中）GPU 化渲染 + SDL_ttf 集成显示层
+  - **GPU 路径 A 已完成**：`engine/src/presenter.c/.h`（逻辑画布作 SDL 静态纹理上传，GPU 按宽高比/滤镜缩放，窗口可拖动缩放）；`sango3view show` 默认开 2K 窗口，支持 `--out/--aspect/--filter`；dummy 驱动下验证通过（窗口物理尺寸/内容矩形/帧数均符合公式）
+  - 顺带修正旧 `sango3view_sdl.c` 的纹理格式 bug（误用 `ABGR8888`，应为 `RGBA8888`）
+  - 待做：SDL_ttf 字体渲染接入（含回退链）
 - **M2**（待）场景驱动（地图 + 战场）+ UI 框架
 
 ## 5 项需求技术落点
@@ -32,6 +35,7 @@ A→B 递进：A 档（2~4 周 demo 级原生原型）→ B 档（4~6 月忠实�
 - **不直接 git push GitHub**（用户决定不推送，本地继续）
 - **pre-commit 钩子必装**：`python tools/install_hooks.py`（钩子随 .git 但不随仓库分发，跨机后要重装）
 - **本机路径一律用 `%USERPROFILE%` / `os.path.expanduser("~")`**（不入个人信息，跨机可移植）
+- **零散临时文件统一放项目根 `tmp/`**（已 gitignore，仅 `.gitkeep` 占位跨机携带）：本机生成、可重建的产物优先进 `tmp/`，不散落项目各处、不落 C 盘。
 
 ## 双机开发
 - 周末台式机（本环境）

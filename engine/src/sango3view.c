@@ -12,14 +12,16 @@
  */
 #include "pak.h"
 #include "shp.h"
+#include "render.h"
+#include "font.h"
+#include "sango3view.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef SANGO3_HAVE_SDL
-/* 实现在 sango3view_sdl.c */
-int sango3view_show_sdl(const uint8_t *rgba, uint32_t w, uint32_t h, uint32_t frames);
+#ifdef _WIN32
+#include <windows.h>
 #endif
 
 typedef struct {
@@ -162,11 +164,57 @@ int main(int argc, char **argv) {
     const char *kw       = argv[3];
     const char *out_path = dump ? argv[4] : NULL;
     uint32_t cols = 8, limit = 64, frames = 0;
+    /* show 模式可选项（物理分辨率 / 宽高比 / 滤镜） */
+    int32_t out_w = 2560, out_h = 1440;          /* 默认 2K，直观展示 GPU 上采样 */
+    Sango3Aspect aspect = SANGO3_ASPECT_PILLARBOX;
+    Sango3Filter filter = SANGO3_FILTER_NEAREST;
+    /* 字体叠加层可选项（M1-b 字体显示） */
+    const char *fonts_dir = NULL;     /* 字体目录（engine/assets/fonts）；不传则不初始化字体 */
+    const char *overlay_text = NULL;  /* 叠加文本（UTF-8，已含繁→简层） */
+    S3FontMode  font_mode = S3_FONT_HD;
+    int         font_size = 24;
+    uint32_t    font_color = 0xFFFFFF;
+    int         font_selftest = 0;
 
     for (int i = dump ? 5 : 4; i < argc; i++) {
         if (strcmp(argv[i], "--cols") == 0 && i + 1 < argc)  cols  = (uint32_t)atoi(argv[++i]);
         else if (strcmp(argv[i], "--limit") == 0 && i + 1 < argc) limit = (uint32_t)atoi(argv[++i]);
         else if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) frames = (uint32_t)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--out") == 0 && i + 1 < argc) {
+            if (sscanf(argv[++i], "%d%*[xX]%d", &out_w, &out_h) != 2) {
+                fprintf(stderr, "bad --out (expect WxH, e.g. 2560x1440)\n");
+                return 1;
+            }
+        }
+        else if (strcmp(argv[i], "--aspect") == 0 && i + 1 < argc) {
+            const char *a = argv[++i];
+            if      (strcmp(a, "pillarbox") == 0) aspect = SANGO3_ASPECT_PILLARBOX;
+            else if (strcmp(a, "stretch")   == 0) aspect = SANGO3_ASPECT_STRETCH;
+            else { fprintf(stderr, "bad --aspect (pillarbox|stretch)\n"); return 1; }
+        }
+        else if (strcmp(argv[i], "--filter") == 0 && i + 1 < argc) {
+            const char *f = argv[++i];
+            if      (strcmp(f, "nearest")  == 0) filter = SANGO3_FILTER_NEAREST;
+            else if (strcmp(f, "bilinear") == 0) filter = SANGO3_FILTER_BILINEAR;
+            else if (strcmp(f, "sharp")    == 0) filter = SANGO3_FILTER_SHARP;
+            else { fprintf(stderr, "bad --filter (nearest|bilinear|sharp)\n"); return 1; }
+        }
+        /* 字体叠加层可选项 */
+        else if (strcmp(argv[i], "--fonts-dir") == 0 && i + 1 < argc) fonts_dir = argv[++i];
+        else if (strcmp(argv[i], "--text") == 0 && i + 1 < argc) overlay_text = argv[++i];
+        else if (strcmp(argv[i], "--font-mode") == 0 && i + 1 < argc) {
+            const char *m = argv[++i];
+            if      (strcmp(m, "pixel") == 0) font_mode = S3_FONT_PIXEL;
+            else if (strcmp(m, "hd")    == 0) font_mode = S3_FONT_HD;
+            else { fprintf(stderr, "bad --font-mode (pixel|hd)\n"); return 1; }
+        }
+        else if (strcmp(argv[i], "--font-size") == 0 && i + 1 < argc) font_size = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--font-color") == 0 && i + 1 < argc) {
+            if (sscanf(argv[++i], "%x", &font_color) != 1) {
+                fprintf(stderr, "bad --font-color (expect hex RRGGBB)\n"); return 1;
+            }
+        }
+        else if (strcmp(argv[i], "--font-selftest") == 0) font_selftest = 1;
     }
 
     const char *err = NULL;
@@ -200,7 +248,21 @@ int main(int argc, char **argv) {
         }
     } else {
 #ifdef SANGO3_HAVE_SDL
-        rc = sango3view_show_sdl(c->px, c->w, c->h, frames);
+        Sango3ViewParams vp;
+        memset(&vp, 0, sizeof vp);
+        vp.frames        = frames;
+        vp.out_w         = out_w;
+        vp.out_h         = out_h;
+        vp.resizable     = 1;
+        vp.aspect        = aspect;
+        vp.filter        = filter;
+        vp.fonts_dir     = fonts_dir;
+        vp.text          = overlay_text;
+        vp.font_mode     = font_mode;
+        vp.font_size     = font_size;
+        vp.font_color    = font_color;
+        vp.font_selftest = font_selftest;
+        rc = sango3view_show_sdl(c->px, c->w, c->h, &vp);
 #else
         printf("FAIL : this build has no SDL support (use dump mode)\n");
         rc = 5;
