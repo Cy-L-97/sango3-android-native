@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>三国群英传3 安卓移植方案（待确认）</title>
+<style>
+  :root{
+    --ink:#1f2430; --muted:#5b6472; --line:#e3e7ee; --bg:#f7f8fb; --card:#ffffff;
+    --accent:#2f5fe0; --accent-soft:#eaf0ff; --ok:#1a8a4a; --ok-soft:#e8f6ee;
+    --warn:#b7791f; --warn-soft:#fdf3e0; --hard:#c0392b; --hard-soft:#fdecea;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Microsoft YaHei","PingFang SC",sans-serif;color:var(--ink);background:var(--bg);line-height:1.75;font-size:15px}
+  .wrap{max-width:960px;margin:0 auto;padding:40px 28px 80px}
+  header{border-bottom:3px solid var(--accent);padding-bottom:20px;margin-bottom:32px}
+  h1{font-size:26px;margin:0 0 6px}
+  .sub{color:var(--muted);font-size:14px}
+  h2{font-size:19px;margin:40px 0 14px;padding-left:12px;border-left:4px solid var(--accent)}
+  h3{font-size:16px;margin:22px 0 8px}
+  p{margin:8px 0}
+  table{width:100%;border-collapse:collapse;background:var(--card);font-size:14px;margin:12px 0;border:1px solid var(--line)}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--accent-soft);font-weight:600;white-space:nowrap}
+  .tag{display:inline-block;padding:1px 10px;border-radius:10px;font-size:12px;font-weight:600;white-space:nowrap}
+  .t-ok{background:var(--ok-soft);color:var(--ok)}
+  .t-mid{background:var(--warn-soft);color:var(--warn)}
+  .t-hard{background:var(--hard-soft);color:var(--hard)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 20px;margin:12px 0}
+  .concl{background:var(--accent-soft);border:1px solid #c6d6ff;border-radius:10px;padding:18px 22px;margin:16px 0}
+  .risk{background:var(--warn-soft);border:1px solid #f0dcb0;border-radius:10px;padding:14px 20px;margin:12px 0}
+  code{background:#eef1f6;padding:1px 6px;border-radius:4px;font-size:13px;font-family:Consolas,monospace}
+  ol li,ul li{margin:4px 0}
+  .step{display:flex;gap:14px;margin:14px 0}
+  .step .num{flex:0 0 34px;height:34px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700}
+  .step .body{flex:1}
+  .step h3{margin:5px 0 4px}
+  .small{font-size:13px;color:var(--muted)}
+  .confirm{background:#fffbe6;border:1px dashed #d4b106;border-radius:10px;padding:16px 22px;margin-top:28px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>《三国群英传3》安卓移植 + 玩法改造 · 可行性评估与实施方案</h1>
+  <div class="sub">版本 v1.0 · 2026-09-12 · 状态：<b>待确认后开工</b> · 测试环境：本机 Steam 正版（E:\...\Sango3）+ 雷电模拟器 + 安卓真机</div>
+</header>
+
+<div class="concl">
+  <h2 style="margin:0 0 10px;border:none;padding:0">一、总体结论（先说答案）</h2>
+  <p><b>整体可行，但方式不是"重新写一个安卓版"，而是"改造 PC 原版 + 在安卓上通过 Windows 兼容层运行"。</b></p>
+  <p>《三国群英传3》没有源码、没有现成开源引擎复刻。为它单独开发安卓原生版相当于重写整个游戏（人年级别工作量），不具备可行性。而社区生态给了我们很好的基础：</p>
+  <ul>
+    <li>资源包 <code>sango3.pak</code>（图片素材）与 <code>Update.pak</code>（武将/技能/物品数据）已被社区工具（RPGViewer、SangoExplorer）完全破解，<b>且游戏会优先读取根目录外置的 <code>Shape\</code>、<code>Setting\</code> 文件夹，无需重打包即可替换素材和数据</b>；</li>
+    <li>社区改版（如 2.2c 改版）已经实现对 exe 的二进制级修改（解除官职带兵限制、必杀技扩到 6 个），证明<b>逆向改造主程序这条路走得通</b>；</li>
+    <li>Winlator（Wine + Box64）在安卓上运行 2002 年的 2D 游戏（本作正好是低端 2D + DirectX 旧接口）属于"最容易跑"的一档，骁龙机型基本稳，中低端 Mali 芯片也可运行 2D 老游戏。</li>
+  </ul>
+  <p><b>推荐技术路线：PC 原版（Steam v2.x）→ 逆向改造 exe + 数据/素材替换 → 整体放入 Winlator 容器在安卓运行。</b>你提的 5 项需求中，①②④属于 exe 逆向改造（中等~中高难度），③有底层存储限制需要一期折中，⑤走外置素材覆盖（确定性高）。预计总周期约 <b>4~7 周</b>（业余节奏）。</p>
+</div>
+
+<h2>二、逐项需求评估</h2>
+
+<table>
+  <tr><th>#</th><th>需求</th><th>实现方式</th><th>难度</th><th>主要风险</th></tr>
+  <tr>
+    <td>1</td><td>我方将领跟随时间自动升级（与电脑方一致）</td>
+    <td>逆向定位内政回合中的"武将经验/升级"函数，找到"玩家势力跳过自动升级"的判断分支并补丁（CheatEngine 动态定位 + Ghidra 静态确认 + 二进制补丁）</td>
+    <td><span class="tag t-mid">中等</span></td>
+    <td>补丁可能影响武将经验值累计逻辑，需多存档回归测试</td>
+  </tr>
+  <tr>
+    <td>2</td><td>士兵携带上限 400 → 1000</td>
+    <td>定位上限常量与校验指令并修改；确认兵力字段宽度（16 位，1000 未溢出）；同时验证城市预备兵、粮耗、战场渲染负载</td>
+    <td><span class="tag t-mid">中等</span></td>
+    <td>战场同屏双方合计可达 2000 兵，2002 年引擎渲染/AI 性能需压测；粮草消耗数值平衡需你自己拍板</td>
+  </tr>
+  <tr>
+    <td>3</td><td>必杀技携带数无限制</td>
+    <td><b>关键事实</b>：必杀技在存档/内存中是 1 字节位掩码，全部种类约 8 种（连刺、大喝、拖刀、气旋、挑斩、一击、生擒、乱舞）。一期方案：移除"最多 3 个"的习得/装备上限判断，允许学满全部 8 种。若要突破 8 种新增必杀技，需扩展数据结构并改存档格式，风险高、建议二期再议</td>
+    <td><span class="tag t-mid">中等</span></td>
+    <td>老存档与新补丁混用可能异常，需要存档兼容策略</td>
+  </tr>
+  <tr>
+    <td>4</td><td>我方武力 ≥80 的将领自动学习必杀技（与电脑方一致）</td>
+    <td>定位电脑方"按武力概率习得必杀技"的逻辑，解除势力判断并复用；或在升级流程注入代码（code cave / 补丁跳板）</td>
+    <td><span class="tag t-hard">中高</span></td>
+    <td>5 项中不确定性最高，依赖①的逆向成果，可能与①共用分支一并解决</td>
+  </tr>
+  <tr>
+    <td>5</td><td>素材图片高清化</td>
+    <td>SangoExplorer/RPGViewer 解包 <code>sango3.pak</code>（头像、武将造型、兵种、武将技图等，SHP/256 色位图）→ AI 超分（Real-ESRGAN/waifu2x）→ 转回原格式放入外置 <code>Shape\</code> 目录（游戏自动优先读取，无需重打包）</td>
+    <td><span class="tag t-mid">中等</span></td>
+    <td>原素材是 256 色、低分辨率，超分可明显增强但不等于"重绘"；游戏窗口固定 800×600，需配合 DxWnd 窗口化/缩放；UI 界面图与动画帧量大，建议分批（头像→兵种→UI）</td>
+  </tr>
+</table>
+
+<div class="risk">
+  <b>诚实提示（必须先说清楚的三点）：</b>
+  <ol style="margin:6px 0 0">
+    <li><b>③"无限制"的物理上限</b>：原版必杀技总共就约 8 种且用 1 字节位掩码存储，所以一期交付是"3 个上限解除、可学满全部 8 种"，而不是"无限多种必杀技"。想要新必杀技属于存档格式级改造，另行评估。</li>
+    <li><b>⑤的画质天花板</b>：AI 超分改善的是素材清晰度，游戏本身的 800×600 界面框架不变，观感是"清晰锐化的老游戏"，不是重制版。</li>
+    <li><b>逆向的无偿风险</b>：①②④没有源码，需要在 32 位 exe 上做动态调试 + 静态逆向，存在"定位失败/补丁引入新 bug"的可能。我会按"先 PC 端验证、后上安卓"的顺序推进，每项改动都会留原版备份，任何一步卡住会及时向你汇报并给替代方案（例如外挂式内存补丁随游戏启动注入）。</li>
+  </ol>
+</div>
+
+<h2>三、安卓运行方案</h2>
+
+<div class="step"><div class="num">A</div><div class="body">
+  <h3>主方案：Winlator 容器（推荐）</h3>
+  <p>Winlator 11.1（开源，brunodev85/GitHub）= Wine + Box64/Box86 + Vulkan 图形栈，免 Root 在安卓上跑 Windows x86 程序。本作是 2002 年 2D 旧 DirectX 游戏，属于兼容性最好的一档：</p>
+  <ul>
+    <li>图形驱动：骁龙 Adreno 机型用 Turnip + WineD3D；Mali（天玑/麒麟）机型用 VirGL + WineD3D（2D 游戏足够）；</li>
+    <li>容器分辨率 800×600 或 1280×720（后者配合缩放），关闭花哨特效，Box64 用兼容性预设；</li>
+    <li>触控方案：策略游戏鼠标点击为主，用 Winlator 触摸鼠标 + 自定义虚拟按键（快捷键/速度切换），也支持蓝牙手柄；</li>
+    <li>存档放在容器内游戏目录，与 PC 端测试存档格式一致。</li>
+  </ul>
+</div></div>
+
+<div class="step"><div class="num">B</div><div class="body">
+  <h3>关于雷电模拟器的重要说明</h3>
+  <p>雷电模拟器是 <b>x86 架构</b>安卓模拟器，而 Winlator 的完整加速路径（Turnip/Vulkan）面向 <b>ARM 真机</b>。因此在雷电上：可以验证"游戏本体 + 改造补丁在安卓容器内能否启动运行"（雷电可用 x86 原生 Wine/Box64 路线，跳过指令转译），<b>但最终性能与手感验收必须在你的安卓真机上完成</b>。请告诉我你的手机型号（重点想知道：骁龙还是天玑/麒麟、内存大小）。</p>
+</div></div>
+
+<h2>四、实施阶段计划</h2>
+
+<table>
+  <tr><th>阶段</th><th>内容</th><th>产出物</th><th>预估耗时</th></tr>
+  <tr><td><b>Phase 0</b><br>取证与基线</td>
+    <td>盘点游戏目录与版本号；解包 PAK 建立素材/数据清单；搭建逆向工具链（CheatEngine、Ghidra、x64dbg）；PC 端原版运行基线截图/存档备份</td>
+    <td>《资产清单》《基线测试记录》</td><td>1~2 天</td></tr>
+  <tr><td><b>Phase 1</b><br>PC 端玩法改造</td>
+    <td>按 ①→②→④→③ 顺序逆向与打补丁（①④很可能共用同一分支）；每项改动独立补丁文件，逐项用多存档回归验证；产出统一的 <code>sango3_patched.exe</code> + 补丁说明</td>
+    <td>改造版 exe +《逐项验证报告》</td><td>1~3 周<br>(③④不确定性最高)</td></tr>
+  <tr><td><b>Phase 2</b><br>安卓容器适配</td>
+    <td>Winlator 容器配置（含雷电先行验证启动）、触控布局、存档读写、长时间游玩稳定性测试（真机）</td>
+    <td>容器配置模板 + 触控方案</td><td>2~5 天<br>(需真机配合)</td></tr>
+  <tr><td><b>Phase 3</b><br>素材高清化</td>
+    <td>分批处理：头像 → 兵种/武将造型 → 武将技图 → UI；AI 超分 + 调色板映射回写；外置 Shape 目录覆盖，逐批对比验收</td>
+    <td>高清素材包（可独立开关）</td><td>1~2 周<br>(可与 Phase2 并行)</td></tr>
+  <tr><td><b>Phase 4</b><br>整合与验收</td>
+    <td>整合最终游戏目录；按下方验收标准逐条打勾；交付完整包 + 使用说明 + 回滚备份</td>
+    <td>最终整合包 +《验收报告》</td><td>2~3 天</td></tr>
+</table>
+
+<h2>五、验收标准（确认后按此逐条验收）</h2>
+<ol>
+  <li>安卓真机上，我方武将在内政阶段随时间自动获得经验并升级，行为与电脑方一致；</li>
+  <li>任一武将可编入并实际带领 1000 名士兵出战，战场满编（双方合计 2000 兵）帧率可接受、无崩溃；</li>
+  <li>武将可习得并装备超过 3 个必杀技（一期上限 = 全部 8 种），战斗中全部正常触发；</li>
+  <li>我方武力 ≥80 的武将会随等级/时间自动习得必杀技，行为与电脑方一致；</li>
+  <li>头像、兵种等主要素材为高清化版本，外置目录方式加载，且可通过移除目录一键切回原版；</li>
+  <li>连续游玩 60 分钟无崩溃，存档/读档正常，旧存档有明确的兼容或弃用说明。</li>
+</ol>
+
+<h2>六、风险与边界</h2>
+<div class="card">
+  <ul>
+    <li><b>合规边界</b>：全部改造基于你自购的 Steam 正版，仅限本人使用、不对外分发（游戏素材与程序版权归宇峻奥汀所有，高清化素材同样只限自用）。</li>
+    <li><b>版本基线</b>：以 Steam 版 exe 为逆向基线；若你的版本是 2.0/2.1 存在差异，Phase 0 会先锁定版本并告知。</li>
+    <li><b>存档兼容</b>：玩法改造可能不兼容旧存档，Phase 1 会先确定兼容策略再动数据结构。</li>
+    <li><b>回滚保障</b>：所有原版文件先备份；改造版与原版并行保留，随时可切回。</li>
+  </ul>
+</div>
+
+<h2>七、需要你确认 / 提供的信息</h2>
+<ol>
+  <li><b>技术路线</b>：是否认可"PC 改造 + Winlator 容器"路线（而非原生安卓重写）？</li>
+  <li><b>需求③口径</b>：接受一期"学满全部 8 种必杀技"的方案吗？还是要评估新增必杀技的二期？</li>
+  <li><b>手机型号</b>：用于预判性能路线（骁龙 / 天玑 / 麒麟）。</li>
+  <li><b>高清化范围</b>：先做头像+兵种（见效最快），还是全量素材一次到位？</li>
+  <li><b>平衡性</b>：士兵 1000 后电脑方同样生效，粮草消耗/难度曲线是否接受跟随原版公式？</li>
+</ol>
+
+<div class="confirm">
+  <b>确认方式：</b>直接在对话里回复"确认开工"（可附上对以上 5 点的答复），我将从 Phase 0 开始执行；过程中每阶段产出都会同步给你，遇到需要你决策的点会随时提出。
+</div>
+
+<p class="small" style="margin-top:30px">附：主要工具链 —— SangoExplorer / RPGViewer（PAK 解包）· CheatEngine + x64dbg + Ghidra（逆向与补丁）· Real-ESRGAN / waifu2x（AI 超分）· DxWnd（窗口化）· Winlator 11.1（安卓运行容器）</p>
+
+</div>
+</body>
+</html>

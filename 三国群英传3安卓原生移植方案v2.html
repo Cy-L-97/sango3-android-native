@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>三国群英传3 安卓原生移植方案 v2（待确认）</title>
+<style>
+  :root{
+    --ink:#1f2430; --muted:#5b6472; --line:#e3e7ee; --bg:#f7f8fb; --card:#ffffff;
+    --accent:#2f5fe0; --accent-soft:#eaf0ff; --ok:#1a8a4a; --ok-soft:#e8f6ee;
+    --warn:#b7791f; --warn-soft:#fdf3e0; --hard:#c0392b; --hard-soft:#fdecea;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Microsoft YaHei","PingFang SC",sans-serif;color:var(--ink);background:var(--bg);line-height:1.75;font-size:15px}
+  .wrap{max-width:960px;margin:0 auto;padding:40px 28px 80px}
+  header{border-bottom:3px solid var(--accent);padding-bottom:20px;margin-bottom:32px}
+  h1{font-size:25px;margin:0 0 6px}
+  .sub{color:var(--muted);font-size:14px}
+  h2{font-size:19px;margin:40px 0 14px;padding-left:12px;border-left:4px solid var(--accent)}
+  h3{font-size:16px;margin:22px 0 8px}
+  p{margin:8px 0}
+  table{width:100%;border-collapse:collapse;background:var(--card);font-size:14px;margin:12px 0;border:1px solid var(--line)}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--accent-soft);font-weight:600;white-space:nowrap}
+  .tag{display:inline-block;padding:1px 10px;border-radius:10px;font-size:12px;font-weight:600;white-space:nowrap}
+  .t-ok{background:var(--ok-soft);color:var(--ok)}
+  .t-mid{background:var(--warn-soft);color:var(--warn)}
+  .t-hard{background:var(--hard-soft);color:var(--hard)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 20px;margin:12px 0}
+  .concl{background:var(--accent-soft);border:1px solid #c6d6ff;border-radius:10px;padding:18px 22px;margin:16px 0}
+  .risk{background:var(--warn-soft);border:1px solid #f0dcb0;border-radius:10px;padding:14px 20px;margin:12px 0}
+  code{background:#eef1f6;padding:1px 6px;border-radius:4px;font-size:13px;font-family:Consolas,monospace}
+  ol li,ul li{margin:4px 0}
+  .small{font-size:13px;color:var(--muted)}
+  .confirm{background:#fffbe6;border:1px dashed #d4b106;border-radius:10px;padding:16px 22px;margin-top:28px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>《三国群英传3》安卓原生移植 · 可行性评估与实施方案 v2</h1>
+  <div class="sub">版本 v2.0 · 2026-09-12 · 应你的要求：放弃模拟器/兼容层路线，改为<b>原生安卓运行</b> · 状态：待确认后开工</div>
+</header>
+
+<div class="concl">
+  <h2 style="margin:0 0 10px;border:none;padding:0">一、结论先行</h2>
+  <p><b>原生移植可行，但必须把项目性质说透：这是一次"引擎重写"工程，不是"移植"。</b></p>
+  <p>我先核实了一个关键事实：网上流传的"OpenSango 开源复刻《三国群英传》"是<b>假消息</b>（我查了 GitHub，该项目不存在）。《三国群英传》全系列没有任何现成的开源引擎或源码可依赖，官方也从未开源。因此原生路线只有一条路：</p>
+  <p style="font-weight:600">▸ 自己实现一个游戏引擎（C++），加载并复用你正版游戏的原版素材与数据，逐模块重写游戏规则，最终编译为原生安卓 App（同时可产出 Windows 版用于开发调试）。</p>
+  <p>这条路有成熟先例可循（《英雄无敌3》的 VCMI、《开放纽约》OpenMW、《毁灭公爵2》Rigel Engine 都是这样诞生的），且本作条件相对友好：<b>纯 2D、固定 800×600、规则数据全在可解包的 INI/PAK 文件里</b>。代价是工作量：这类项目社区通常做数年，由我全力开发并按里程碑交付，<b>预计 4~6 个月出完整可玩版，业余节奏则可能拖到一年</b>。这是一次长跑，需要你有心理预期。</p>
+  <p><b>回报也很实在</b>：在原生方案里，你的 5 项需求从"逆向 hack"变成"改自己代码里的参数和逻辑"——全部变成简单任务；高清化从"贴图超分凑合看"变成引擎原生支持高分辨率渲染；以后想加新玩法、新剧本、甚至联机，都只受想象力限制。</p>
+</div>
+
+<h2>二、为什么"原生移植"没有捷径</h2>
+<table>
+  <tr><th>可能的路</th><th>结论</th><th>原因</th></tr>
+  <tr><td>找现成开源引擎/源码</td><td><span class="tag t-hard">不存在</span></td><td>已核实 GitHub 全网无《三国群英传》系列引擎复刻项目；"OpenSango"为谣言</td></tr>
+  <tr><td>反编译 exe 直接转 ARM</td><td><span class="tag t-hard">不可行</span></td><td>x86 + DirectX 老代码没有可用的静态重编译工具链，反编译产物无法直接重编译为安卓原生库</td></tr>
+  <tr><td>官方移植/求助宇峻奥汀</td><td><span class="tag t-hard">不可行</span></td><td>官方只出了 PC 版和手游版（玩法不同的群英传手游），不会为 3 代老作出新移植</td></tr>
+  <tr><td><b>自研引擎 + 复用原版资产</b></td><td><span class="tag t-ok">可行（推荐）</span></td><td>素材与数据格式已被社区破解，游戏规则可逆向提取，2D 引擎自研难度可控</td></tr>
+</table>
+
+<h2>三、技术架构</h2>
+<div class="card">
+  <h3 style="margin-top:0">一套代码，两个平台</h3>
+  <p>用 <b>C++ + SDL2 + OpenGL ES</b> 编写，PC（Windows）与 Android（NDK）共用同一代码库——PC 版就是开发调试的主战场，安卓版是最终交付形态。</p>
+  <table>
+    <tr><th>模块</th><th>职责</th><th>难点</th></tr>
+    <tr><td>资源加载</td><td>解析 <code>sango3.pak</code> / <code>Update.pak</code>、SHP 精灵动画、调色板、字体、音频</td><td><span class="tag t-ok">低</span> 社区格式资料齐全，SangoExplorer 可交叉验证</td></tr>
+    <tr><td>渲染</td><td>2D 批渲染，虚拟 800×600 逻辑坐标系，任意分辨率缩放（原生高清的基础）</td><td><span class="tag t-ok">低</span></td></tr>
+    <tr><td>数据层</td><td>武将/物品/兵种/技能/剧本 全部从原版 INI 数据表读取（规则数据零猜测）</td><td><span class="tag t-ok">低</span></td></tr>
+    <tr><td>大地图 & 内政</td><td>回合制内政、城池经营、人事/军事/外交指令、武将升迁</td><td><span class="tag t-mid">中</span> 界面多但逻辑直白</td></tr>
+    <tr><td><b>战斗系统</b></td><td>战棋行军 + 百人战实时战斗、武将技/必杀技演出、兵种克制、战斗 AI</td><td><span class="tag t-hard">高</span> 全项目最大难点，需结合逆向 exe 提取真实规则与数值，再行为校准</td></tr>
+    <tr><td>存档</td><td>新引擎自有存档格式（可读可调试），不支持旧存档直接读取</td><td><span class="tag t-mid">中</span></td></tr>
+    <tr><td>安卓适配</td><td>NDK 构建、触控 UI（点击+虚拟按键+手势）、不同屏幕适配</td><td><span class="tag t-mid">中</span></td></tr>
+  </table>
+</div>
+
+<h2>四、你的 5 项需求在原生方案下的实现方式</h2>
+<table>
+  <tr><th>#</th><th>需求</th><th>原生方案下的实现</th><th>难度变化</th></tr>
+  <tr><td>1</td><td>我方将领自动升级</td><td>内政回合逻辑是我们自己写的，玩家/电脑势力共用同一套升级函数</td><td>逆向 hack → <span class="tag t-ok">改一行判断</span></td></tr>
+  <tr><td>2</td><td>士兵上限 1000</td><td>上限是引擎配置常量；同时新渲染器按批绘制，2000 兵同屏性能可控</td><td>逆向 hack → <span class="tag t-ok">改配置</span></td></tr>
+  <tr><td>3</td><td>必杀技无限制</td><td>技能系统自己设计数据结构，不再受原版 1 字节位掩码限制；<b>还能新增自定义必杀技</b></td><td>受底层限制 → <span class="tag t-ok">完全自由</span></td></tr>
+  <tr><td>4</td><td>武力≥80 自动学必杀技</td><td>学习规则是我们自己写的判断逻辑</td><td>逆向 hack → <span class="tag t-ok">改一个条件</span></td></tr>
+  <tr><td>5</td><td>素材高清化</td><td>引擎原生支持高分辨率渲染；素材管线：原版 SHP → AI 超分 → 高清版本自动加载，且保留原版素材一键切换</td><td>贴图补丁 → <span class="tag t-ok">原生能力</span></td></tr>
+</table>
+
+<h2>五、里程碑计划（每个里程碑都是可运行的版本）</h2>
+<table>
+  <tr><th>里程碑</th><th>交付内容</th><th>你看到的画面</th><th>预估耗时*</th></tr>
+  <tr><td><b>M0 资源管线</b></td><td>PAK/SHP/数据表解析器 + 渲染原型</td><td>PC 窗口里正确显示原版地图、武将立绘、动画</td><td>2~3 周</td></tr>
+  <tr><td><b>M1 内政骨架</b></td><td>剧本选择、回合推进、城池/武将/势力、基础内政指令</td><td>能开一局，在大地图上操作城池和武将</td><td>4~6 周</td></tr>
+  <tr><td><b>M2 战斗系统</b></td><td>战棋行军 + 百人战 + 武将技/必杀技 + 战斗 AI（对照原版校准数值）</td><td>能打一场完整战斗，打完回大地图</td><td>6~10 周</td></tr>
+  <tr><td><b>M3 规则补全</b></td><td>单挑、宝物、外交、事件、音效音乐、存档读档</td><td>接近原版完整体验，可完整通关一局</td><td>4~8 周</td></tr>
+  <tr><td><b>M4 安卓移植</b></td><td>NDK 构建、触控 UI、真机适配（用你的手机和雷电模拟器双路测试）</td><td>手机上原生 App 运行</td><td>2~4 周</td></tr>
+  <tr><td><b>M5 五项定制</b></td><td>自动升级 / 1000 兵 / 必杀技无限 / 自动学技 / 高清素材管线</td><td>你的定制版</td><td>1~2 周</td></tr>
+</table>
+<p class="small">* 耗时按"我全力开发、你在里程碑点验收反馈"估算；M2 波动最大，因为战斗规则要边逆向原版 exe 边校准。M4 起安卓真机测试需要你配合装包验证。</p>
+
+<div class="risk">
+  <b>必须提前说清的风险与代价：</b>
+  <ol style="margin:6px 0 0">
+    <li><b>这是月级长跑</b>：最短 4 个月量级（顺利情形），战斗系统校准不顺则更久。与 Winlator 路线的"几周"完全不是一个量级——这是原生还原的真实价格。</li>
+    <li><b>规则还原度依赖逆向</b>：数值表可直接从数据文件读取（零猜测），但战斗内逻辑（AI 决策、技能判定）需要逆向 exe 提取，个别细节可能凭行为观察拟合，与原版存在细微差异。</li>
+    <li><b>旧存档不通用</b>：新引擎用自己的存档格式，原版存档无法直接读入。</li>
+    <li><b>版权边界</b>：引擎代码是我们自己写的没问题；打包运行仍需你自备正版游戏的素材文件，且成果仅限自用、不分发。</li>
+  </ol>
+</div>
+
+<h2>六、开工前需要你确认的事项</h2>
+<ol>
+  <li><b>确认接受工程量级</b>：4~6 个月、里程碑制交付——这是原生路线的门票，确认后不再回头改路线；</li>
+  <li><b>还原度口径</b>：追求"逐细节还原原版"，还是"核心玩法还原 + 允许合理优化"（后者更快更好玩，推荐）？</li>
+  <li><b>优先级</b>：如果时间拉长，你希望优先保证"战斗系统爽"还是"内政大地图全"？</li>
+  <li><b>开发机型</b>：安卓真机型号（决定 M4 适配重点）。</li>
+</ol>
+
+<div class="confirm">
+  <b>确认方式：</b>回复"确认原生方案开工"（附上面 4 点答复即可）。我将在下一回合启动 M0，先交付"PC 端原版素材浏览器原型"让你亲眼验证资源管线，之后再逐里程碑推进。
+</div>
+
+<p class="small" style="margin-top:30px">附：技术栈 — C++20 · SDL2 · OpenGL ES 3.0 · Android NDK · Ghidra（逆向参考）· SangoExplorer/RPGViewer（素材格式对照）· Real-ESRGAN（素材超分管线）<br>参考先例 — VCMI（英雄无敌3）、OpenMW（上古卷轴3）、Rigel Engine（毁灭公爵2）：均为"自研引擎 + 原版资产"模式</p>
+
+</div>
+</body>
+</html>

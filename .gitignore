@@ -1,0 +1,36 @@
+# ===== 临时/探针文件 =====
+.workbuddy/probe.txt
+*.tmp
+*.log
+
+# ===== 游戏原版素材与版权文件（严禁入库，各机器从本地正版游戏读取）=====
+assets/original/
+assets/hd/
+game/
+*.pak
+*.pck
+*.sav
+*.shp
+*.res
+
+# ===== 编译产物与二进制 =====
+build/
+out/
+bin/
+obj/
+*.exe
+*.dll
+*.so
+*.apk
+*.aab
+
+# ===== IDE / 工具链缓存 =====
+.vs/
+.vscode/
+.idea/
+*.user
+CMakeCache.txt
+CMakeFiles/
+.cxx/
+.gradle/
+local.properties
