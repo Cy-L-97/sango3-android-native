@@ -1,3 +1,6 @@
+# ===== 本地备份（内含 .git 镜像，绝不入库）=====
+.workbuddy/git-backup-*/
+
 # ===== 临时/探针文件 =====
 .workbuddy/probe*.txt
 .workbuddy/probe*.py
@@ -7,8 +10,8 @@
 .workbuddy/script/
 .workbuddy/png/
 .workbuddy/downloads/
-# 分辨率矩阵出图体积大（4K 单张 2MB+），不入库；用 tools/render_scene.py 随时重生
-.workbuddy/render/scene/
+# 渲染产物一律不入库（4K 单张 2MB+）；用 tools/render_scene.py / render_font_preview.py 随时重生
+.workbuddy/render/
 *.tmp
 *.log
 
@@ -35,7 +38,6 @@ obj/
 
 # ===== 第三方依赖（体积大，由 tools/fetch_*.py 自动获取，不入库）=====
 third_party/
-.workbuddy/downloads/
 
 # ===== IDE / 工具链缓存 =====
 .vs/
