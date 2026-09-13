@@ -15,13 +15,58 @@ if(MSVC)
   # /utf-8: 源码含中文，必须让 MSVC 按 UTF-8 解析
   # /W4  : 高警告等级
   add_compile_options(/utf-8 /W4 /permissive-)
-  add_compile_definitions(_CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
+  add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 endif()
 
-# ---- 工具：PAK 资源包检查器（数据层第 1 块砖） ----
-add_executable(sango3pak src/pak_lister.c)
+# ---------------------------------------------------------------- 数据层（共享）
+add_library(sango3_data STATIC
+  src/pak.c
+  src/shp.c)
 
-set_target_properties(sango3pak PROPERTIES
+target_include_directories(sango3_data PUBLIC src)
+
+# ---------------------------------------------------------------- 工具与可执行
+# PAK 容器检查器
+add_executable(sango3pak src/pak_lister.c)
+target_link_libraries(sango3pak PRIVATE sango3_data)
+
+# SHP 精灵解码验证器
+add_executable(sango3shp src/shp_probe.c)
+target_link_libraries(sango3shp PRIVATE sango3_data)
+
+# 渲染验证器（dump 出图 / show 开窗）
+add_executable(sango3view src/sango3view.c)
+target_link_libraries(sango3view PRIVATE sango3_data)
+
+set_target_properties(sango3pak sango3shp sango3view PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
-message(STATUS "Sango3Native: C=${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}  build=${CMAKE_BUILD_TYPE}")
+# ---------------------------------------------------------------- SDL2（可选）
+# third_party/SDL2 由 tools/setup_sdl.py 从官方包部署（不入库）。
+# 存在即启用 show 模式与后续窗口程序；缺失时 dump 模式仍可正常工作。
+set(SANGO3_SDL2_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/SDL2")
+if(EXISTS "${SANGO3_SDL2_DIR}/include/SDL.h")
+  message(STATUS "SDL2 found: ${SANGO3_SDL2_DIR}")
+  add_library(sango3_sdl INTERFACE)
+  target_include_directories(sango3_sdl INTERFACE "${SANGO3_SDL2_DIR}/include")
+  # 只链接 SDL2.lib（不链接 SDL2main.lib）：SDL_MAIN_HANDLED 让 main 保持真 main，
+  # 我们的程序还有一个不依赖视频子系统的 dump 模式，不需要 WinMain 包装。
+  target_link_libraries(sango3_sdl INTERFACE "${SANGO3_SDL2_DIR}/lib/x64/SDL2.lib")
+  target_compile_definitions(sango3_sdl INTERFACE SANGO3_HAVE_SDL=1 SDL_MAIN_HANDLED=1)
+  set(SANGO3_HAVE_SDL TRUE)
+else()
+  message(STATUS "SDL2 not found at ${SANGO3_SDL2_DIR} — building without SDL (dump mode only)")
+  set(SANGO3_HAVE_SDL FALSE)
+endif()
+
+if(SANGO3_HAVE_SDL)
+  target_sources(sango3view PRIVATE src/sango3view_sdl.c)
+  target_link_libraries(sango3view PRIVATE sango3_sdl)
+  # 把 SDL2.dll 复制到产物目录，保证可执行文件能直接运行
+  add_custom_command(TARGET sango3view POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${SANGO3_SDL2_DIR}/lib/x64/SDL2.dll"
+            "$<TARGET_FILE_DIR:sango3view>/SDL2.dll")
+endif()
+
+message(STATUS "Sango3Native: C=${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}  build=${CMAKE_BUILD_TYPE}  sdl=${SANGO3_HAVE_SDL}")
