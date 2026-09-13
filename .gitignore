@@ -41,6 +41,8 @@ secrets.env
 # ===== 临时/探针文件 =====
 .workbuddy/probe*.txt
 .workbuddy/probe*.py
+# 验证证据（C 探针输出/对照报告等一次性产物，必要时随时重跑验证脚本重生）
+.workbuddy/evidence/
 # 工具链/安装器输出的原始日志（可能含本机路径），不入库
 .workbuddy/*_stdout.txt
 .workbuddy/*_stderr.txt

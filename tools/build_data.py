@@ -132,11 +132,19 @@ for g in gens:
         "horse": (g.get("Horse") or "").strip(),
     })
 
-# 计算当前攻击力（基础武力 + 武器加成）
+# 野兽判定（结构化规则，与 C 侧 S3_BEAST_INTELLIGENCE_MAX / S3_BEAST_HP_MIN 完全一致）
+BEAST_INT_MAX = 20
+BEAST_HP_MIN = 150
+
+def is_beast(r):
+    return r["intelligence"] <= BEAST_INT_MAX and r["hp"] >= BEAST_HP_MIN
+
+# 计算当前攻击力（基础武力 + 武器加成）+ 野兽标记
 for r in recs:
     it = item_by_name.get(r["weapon"])
     r["weapon_bonus"] = it["strength_bonus"] if it else 0
     r["current_attack"] = r["strength"] + r["weapon_bonus"]
+    r["is_beast"] = is_beast(r)
 
 json.dump(recs, open(os.path.join(OUT, "generals.json"), "w", encoding="utf-8"),
           ensure_ascii=False, indent=1)
@@ -200,13 +208,8 @@ summary.append(f"rules.json       升级经验曲线 {len(gmap.get('GENERALEXP',
 # =================================================================
 # 野兽判定（结构化规则，不用名字黑名单）：
 #   (智力 <= 20 且 HP >= 150) 恰好命中 4 只，零误伤；黃巾頭目/黃巾將軍 落在人形一侧。
-BEAST_INT_MAX = 20
-BEAST_HP_MIN = 150
-
-
-def is_beast(r):
-    return r["intelligence"] <= BEAST_INT_MAX and r["hp"] >= BEAST_HP_MIN
-
+# 野兽判定函数与常量在文件前部（generals 字段填充之后）定义，
+# 此处直接复用，避免在 Python 源里出现两份语义相同、容易失同步的常量。
 
 # 规则常量（引擎按此实现）
 RULE = {

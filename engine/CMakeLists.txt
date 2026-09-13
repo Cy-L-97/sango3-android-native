@@ -31,6 +31,16 @@ target_include_directories(sango3_data PUBLIC src)
 add_library(sango3_render STATIC src/render.c)
 target_include_directories(sango3_render PUBLIC src)
 
+# ------------------------------------------------------------ 规则数据层（共享）
+# INI 解析（Big5 → UTF-8）、编码表、随机源、武将/物品/兵种/技表 + 需求③④的运行时规则。
+# 不依赖 SDL / OpenGL，可离线跑回归（sango3data）。
+add_library(sango3_game STATIC
+  src/text.c
+  src/ini.c
+  src/rng.c
+  src/gamedata.c)
+target_include_directories(sango3_game PUBLIC src)
+
 # ---------------------------------------------------------------- 工具与可执行
 # PAK 容器检查器
 add_executable(sango3pak src/pak_lister.c)
@@ -48,7 +58,11 @@ target_link_libraries(sango3view PRIVATE sango3_data)
 add_executable(sango3scene src/sango3scene.c)
 target_link_libraries(sango3scene PRIVATE sango3_data sango3_render)
 
-set_target_properties(sango3pak sango3shp sango3view sango3scene PROPERTIES
+# 数据层 / 必杀技规则验证器（C 结果导出，供 Python 基准比对）
+add_executable(sango3data src/gamedata_probe.c)
+target_link_libraries(sango3data PRIVATE sango3_game)
+
+set_target_properties(sango3pak sango3shp sango3view sango3scene sango3data PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # ---------------------------------------------------------------- SDL2（可选）
