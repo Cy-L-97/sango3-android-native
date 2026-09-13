@@ -8,45 +8,72 @@
 
 | 文件 | 用途 | 许可 |
 |---|---|---|
-| `ArkPixel12-zh_tw.ttf` | 「原版像素」显示模式的点阵字体 | OFL-1.1（见 `OFL-ArkPixel.txt`） |
-| `LXGWWenKai-Regular.ttf` | 「高清」显示模式（默认）的矢量字体 | OFL-1.1（见 `OFL-LXGWWenKai.txt`） |
+| `LXGWWenKai-Regular.ttf` | 「高清」显示模式（默认）的矢量字体 | OFL-1.1（`OFL-LXGWWenKai.txt`） |
+| `FusionPixel12-zh_hant.ttf` | 「原版像素」显示模式的点阵字体 | OFL-1.1（`OFL-FusionPixel.txt`） |
 
-### ArkPixel12-zh_tw
-- 来源：方舟像素字体 Ark Pixel Font 12px proportional
-  https://github.com/TakWolf/ark-pixel-font  （版本 2026.09.01）
-- 为何选 12px：原始游戏中文为 14/16/20px 点阵位图。12px 点阵在 **整数倍**
-  放大（1080p ×2、2K ×3、4K ×4）时仍是干净的像素方块，观感最接近原版；
-  非整数倍放大则会因采样不均而出现断笔，故该模式建议配合整数倍缩放使用。
-- 为何选 zh_tw：**游戏数据表是 Big5 繁体**（General01.ini / Menu.ini 等），
-  zh_tw 子字体覆盖繁体用字。
+## 选型依据：对【游戏实际文本】的覆盖率实测
 
-### LXGWWenKai-Regular
-- 来源：霞鹜文楷 LXGW WenKai v1.522
-  https://github.com/lxgw/LxgwWenKai
-- 矢量轮廓，任意物理尺寸下清晰，是 2K/4K 下的默认字体；
-  楷体气质也与三国题材相称。
+用游戏自身的全部可见文本（16 个 INI 数据表 + 文本表）提取出 **1970 个不同汉字**，
+逐个检查字体 cmap 覆盖情况（脚本：`tools/check_font_coverage.py`）：
+
+| 候选字体 | 内码位 | 缺失 | 覆盖率 | 结论 |
+|---|---|---|---|---|
+| Ark Pixel 12px | 24,471 | 158 | 92.10% | ✗ 弃用 |
+| Ark Pixel 16px | 3,252 | 1909 | 3.10% | ✗ 弃用 |
+| **Fusion Pixel 12px** | 36,558 | **3** | **99.85%** | ✅ **采用** |
+| **LXGW WenKai** | 46,490 | **0** | **100%** | ✅ **采用** |
+
+> Ark Pixel 12px 被弃用的原因值得记下：它的缺失字**不是生僻字**，而是
+> 孫 / 殺 / 擊 / 旋 / 拖 / 換 / 施 / 應 / 懷 / 錢 这类高频字 —— 意味着
+> 「孫權」「必殺技」都会显示方框，实际不可用。**覆盖率必须用真实文本量化，不能凭感觉选。**
 
 ## 两种显示模式
 
-引擎按「逻辑 640×480 → 物理分辨率」的视口变换渲染。文字不参与位图放大，
-而是**按目标物理尺寸直接栅格化**（见 `docs/分辨率与高清化架构.md`）：
+引擎按「逻辑 640×480 → 物理分辨率」做视口变换。文字不参与位图放大，
+而是按目标物理尺寸栅格化（详见 `docs/分辨率与高清化架构.md` 第六节）：
 
-- **高清模式（默认）**：用 LXGWWenKai，按物理像素尺寸渲染字形。
-  例：逻辑 14px 字号在 2K(×3) 下按 42px 栅格化，边缘依旧干净。
-- **原版像素模式**：用 ArkPixel12，仅在整数倍缩放下启用，保留复古观感。
+- **高清模式（默认）**：`LXGWWenKai`，按物理像素尺寸渲染字形。
+  例：逻辑 14px 字号在 2K（×3）下按 42px 栅格化，边缘依旧干净。
+- **原版像素模式**：`FusionPixel12`，仅在整数倍缩放下启用，保留复古观感。
+  12px 在 ×2/×3/×4 下都是干净的像素块；非整数倍会因采样不均出现断笔，
+  该模式下应自动提示或降级为高清模式。
+
+### ⚠ 像素模式必须配置字体回退链
+
+`FusionPixel12` 缺 **3 个字**：**繇 / 鋻 / 鎩**。它们都在真实文本中出现：
+
+| 字 | 出现位置 |
+|---|---|
+| 繇 | 武将名 **劉繇**（EventCond.ini / EventMsg.ini 孙策剧情） |
+| 鋻 | 桃园结义剧情文本「實**鋻**此心」 |
+| 鎩 | 武器名（Thing.ini，武力 +4） |
+
+因此像素模式开启时必须调用 SDL_ttf 的回退机制：
+
+```c
+TTF_Font *pixel    = TTF_OpenFont("engine/assets/fonts/FusionPixel12-zh_hant.ttf", 12);
+TTF_Font *fallback = TTF_OpenFont("engine/assets/fonts/LXGWWenKai-Regular.ttf", 12);
+TTF_AddFallbackFont(pixel, fallback);   /* 缺字自动落到楷体，不出现方框 */
+```
+
+这样 1967/1970 个字是纯正像素字形，仅 3 个生僻字换成楷体，
+**任何文本都不会显示方框**。高清模式覆盖 100%，无需回退。
 
 ## 再生成方式
 
 字体文件已随仓库分发，正常无需重新获取。若需更新版本或在新机器上重建：
 
 ```
-python tools/fetch_fonts.py     # 从 GitHub 下载（失败自动走 gh-proxy 镜像）
-python tools/setup_fonts.py     # 部署到本目录并写入许可证
+python tools/fetch_fonts.py        # 下载霞鹜文楷 + 像素字体候选
+python tools/fetch_pixel_alt.py    # 下载像素字体候选（Fusion / Ark Pixel 16）
+python tools/check_font_coverage.py  # 量化覆盖率（换字体后务必重跑）
+python tools/setup_fonts.py        # 部署到本目录并写入许可证
+python tools/render_font_preview.py  # 生成渲染验收图
 ```
 
 ## 体积优化方向（后续可选）
 
-`LXGWWenKai-Regular.ttf` 约 25 MB，全量字符集。若需压缩 Android 安装包体积，
-可基于游戏实际用字（Text.ini / Dialogue.ini / EventMsg.ini / Menu.ini 等）
-做字体子集化（fonttools subset）。**但子集化有缺字风险**（未收录的字符会显示方框），
-需在文本全部提取完成后、并保留完整字体作为兜底，才建议启用。
+两套字体合计约 32 MB，均为全量字符集。若需压缩 Android 安装包体积，
+可在全部文本提取完成后做子集化（fonttools subset，只保留游戏用到的字）。
+本项目文本已全部可提取（16 个 INI），子集化后预计可压到 1 MB 以内；
+**但务必保留完整字体作为回退兜底**，避免出现未收录字符。

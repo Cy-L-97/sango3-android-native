@@ -75,6 +75,11 @@ python tools/build_pc.py --reconfigure     # CMake 结构变更后
 
 # 依赖部署（换机器时执行一次）
 python tools/fetch_sdl.py && python tools/setup_sdl.py
+python tools/fetch_fonts.py && python tools/setup_fonts.py    # 字体已入库，通常无需重跑
+
+# 字体（换字体后必跑覆盖率量化）
+python tools/check_font_coverage.py    # 用游戏全部文本量化覆盖率
+python tools/render_font_preview.py    # 渲染验收图（含缺字回退验证）
 
 # 数据字典（从本机正版重新生成）
 python tools/build_data.py
@@ -102,6 +107,6 @@ python tools/render_scene.py      # 分辨率矩阵：640×480 / 1080p / 2K / 4K
 - [x] A 档 M0：资源管线（PAK / SHP / 数据表 / 字节码格式全部破解；617 张素材解码验证）
 - [x] 分辨率架构定稿（逻辑 640×480 ↔ 物理分辨率解耦；2K 出图实测通过）
 - [x] 第 4 项需求口径修正：基础武力 → **当前攻击力**（含装备加成，运行时判定）
-- [x] 内置开源中文字体（霞鹜文楷 + 方舟像素，OFL-1.1）
+- [x] 内置开源中文字体（霞鹜文楷 100% 覆盖 + 缝合像素 99.85%，OFL-1.1，含缺字回退链）
 - [ ] A 档 M1：引擎骨架（数据层 ✅ / 分辨率无关渲染核心 ✅ / 窗口程序 → 进行中）
 - [ ] A 档 M2~M5：内政 → 战斗 → 安卓 → 五项定制
