@@ -155,15 +155,26 @@ json.dump(gmap, open(os.path.join(OUT, "rules.json"), "w", encoding="utf-8"),
 summary.append(f"rules.json       升级经验曲线 {len(gmap.get('GENERALEXP', {}))} 级 / {len(gmap.get('SOLDIEREXP', {}))} 级")
 
 # ---- 第 4 项需求：武力>=80 自动学必杀技 的目标名单 ----
-targets = [r for r in recs if r["strength"] >= 80 and not r["super_attack"]]
+# 用户决定（2026-09-13）：野兽 / 杂兵不发必杀技（后续另行设计特殊攻击方式）
+NON_GENERAL = ["猛虎", "白額虎", "白额虎", "南蠻象", "南蛮象", "印度神象",
+               "黃巾頭目", "黄巾头目", "黃巾將軍", "黄巾将军"]
+
+def is_real_general(r):
+    return not any(k in r["name"] for k in NON_GENERAL)
+
+pool = [r for r in recs if r["strength"] >= 80 and not r["super_attack"]]
+targets = [r for r in pool if is_real_general(r)]
+excluded = [r for r in pool if not is_real_general(r)]
 with_sa = [r for r in recs if r["super_attack"]]
 json.dump({
-    "criteria": "strength >= 80 and super_attack is empty",
+    "criteria": "strength >= 80 and super_attack is empty and is a real general",
     "count": len(targets),
+    "excluded_non_general_count": len(excluded),
     "generals": [{"no": r["no"], "name": r["name"], "strength": r["strength"]} for r in targets],
+    "excluded_non_general": [{"no": r["no"], "name": r["name"], "strength": r["strength"]} for r in excluded],
 }, open(os.path.join(OUT, "auto_superattack_targets.json"), "w", encoding="utf-8"),
     ensure_ascii=False, indent=1)
-summary.append(f"auto_superattack_targets.json  {len(targets)} 人待补（武力>=80 且无必杀技）")
+summary.append(f"auto_superattack_targets.json  {len(targets)} 名真武将待补 + {len(excluded)} 个野兽/杂兵已排除")
 
 print("=== 数据字典导出完成 ===")
 for s in summary:
