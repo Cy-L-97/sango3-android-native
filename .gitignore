@@ -18,10 +18,25 @@ id_ed25519*
 .env.*
 .netrc
 _netrc
-*credential*
-*secret*
+# 常见凭据文件名。注意：不要用 *secret* / *credential* 这类过宽的通配，
+# 会误伤正常脚本（例如 tools/check_secrets.py 就会被 *secret* 命中）
+credentials.json
+credentials.yaml
+credentials.yml
+secrets.json
+secrets.yaml
+secrets.yml
+secrets.env
+*credentials*.json
+*credential*.env
+*secret*.json
+*secret*.yaml
+*secret*.yml
+*secret*.env
 *token*.json
-!.workbuddy/memory/
+
+# 本地敏感词表：内含个人姓名等标识，只在本机存在，严禁入库
+.workbuddy/secret-denylist.txt
 
 # ===== 临时/探针文件 =====
 .workbuddy/probe*.txt
