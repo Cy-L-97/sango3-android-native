@@ -30,6 +30,10 @@ obj/
 *.apk
 *.aab
 
+# ===== 第三方依赖（体积大，由 tools/fetch_*.py 自动获取，不入库）=====
+third_party/
+.workbuddy/downloads/
+
 # ===== IDE / 工具链缓存 =====
 .vs/
 .vscode/
