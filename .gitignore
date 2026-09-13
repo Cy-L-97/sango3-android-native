@@ -1,5 +1,7 @@
 # ===== 临时/探针文件 =====
-.workbuddy/probe.txt
+.workbuddy/probe*.txt
+.workbuddy/probe*.py
+.workbuddy/sample/
 *.tmp
 *.log
 
