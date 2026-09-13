@@ -7,7 +7,8 @@
 .workbuddy/script/
 .workbuddy/png/
 .workbuddy/downloads/
-.workbuddy/render/scene/     # 分辨率矩阵出图（体积大，用 tools/render_scene.py 随时重生）
+# 分辨率矩阵出图体积大（4K 单张 2MB+），不入库；用 tools/render_scene.py 随时重生
+.workbuddy/render/scene/
 *.tmp
 *.log
 
