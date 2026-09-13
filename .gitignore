@@ -2,6 +2,10 @@
 .workbuddy/probe*.txt
 .workbuddy/probe*.py
 .workbuddy/sample/
+.workbuddy/gallery/
+.workbuddy/data/
+.workbuddy/script/
+.workbuddy/png/
 *.tmp
 *.log
 
