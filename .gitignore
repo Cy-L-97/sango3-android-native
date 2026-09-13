@@ -30,6 +30,9 @@ build/
 out/
 bin/
 obj/
+__pycache__/
+*.pyc
+*.pyo
 *.exe
 *.dll
 *.so
