@@ -28,7 +28,7 @@ print("ninja 可用性（先看 PATH，再看 pip 是否装了）")
 ninja = shutil.which("ninja")
 print(f"  shutil.which(ninja) = {ninja}")
 cands = [
-    r"%USERPROFILE%\.workbuddy\binaries\ninja\ninja.exe",
+    os.path.expanduser(r"~\.workbuddy\binaries\ninja\ninja.exe"),
     r"C:\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe",
 ]
 for c in cands:

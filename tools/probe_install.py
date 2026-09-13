@@ -48,7 +48,7 @@ print()
 print("=" * 70)
 print("三、引导程序日志")
 print("=" * 70)
-temp = os.environ.get("TEMP", r"%USERPROFILE%\AppData\Local\Temp")
+temp = os.environ.get("TEMP", os.path.expanduser(r"~\AppData\Local\Temp"))
 import glob
 for pat in ["dd_bootstrapper*.log", "dd_setup*.log", "dd_installer*.log"]:
     for p in glob.glob(os.path.join(temp, pat)):

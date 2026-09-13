@@ -27,8 +27,8 @@ SDK_LIB = rf"{SDK_ROOT}\Lib\{SDK_VER}"
 SDK_BIN = rf"{SDK_ROOT}\bin\{SDK_VER}\x64"
 MSBUILD = rf"{BUILD_TOOLS}\MSBuild\Current\Bin\MSBuild.exe"
 NMAKE = rf"{VC}\bin\Hostx64\x64\nmake.exe"
-CMAKE = r"%USERPROFILE%\.workbuddy\binaries\cmake\cmake-4.4.3-windows-x86_64\bin\cmake.exe"
-GIT = r"%USERPROFILE%\.workbuddy\binaries\PortableGit\versions\1.2.0\cmd\git.exe"
+CMAKE = os.path.expanduser(r"~\.workbuddy\binaries\cmake\cmake-4.4.3-windows-x86_64\bin\cmake.exe")
+GIT = os.path.expanduser(r"~\.workbuddy\binaries\PortableGit\versions\1.2.0\cmd\git.exe")
 
 
 def make_env(extra_path=None, extra=None):

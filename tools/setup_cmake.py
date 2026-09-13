@@ -35,7 +35,7 @@ if not zips:
     print("  未找到 CMake 压缩包")
 else:
     zp = os.path.join(DL, zips[0])
-    dest_root = r"%USERPROFILE%\.workbuddy\binaries\cmake"
+    dest_root = os.path.expanduser(r"~\.workbuddy\binaries\cmake")
     os.makedirs(dest_root, exist_ok=True)
     t0 = time.time()
     with zipfile.ZipFile(zp) as z:

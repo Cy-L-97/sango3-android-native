@@ -34,7 +34,7 @@ def pick_ninja():
     if found:
         return found
     for pat in [r"D:\PythonPackages\site-packages\bin\ninja.exe",
-                r"%USERPROFILE%\.workbuddy\binaries\python\envs\default\Scripts\ninja.exe"]:
+                os.path.expanduser(r"~\.workbuddy\binaries\python\envs\default\Scripts\ninja.exe")]:
         if os.path.isfile(pat):
             return pat
     hits = glob.glob(r"D:\PythonPackages\site-packages\**\ninja.exe", recursive=True)

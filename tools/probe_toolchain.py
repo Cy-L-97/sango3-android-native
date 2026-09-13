@@ -25,8 +25,8 @@ cands = [
     r"C:\Program Files\Java",
     r"C:\Program Files\Eclipse Adoptium",
     r"C:\Program Files\dotnet",
-    r"%USERPROFILE%\AppData\Local\Android\Sdk",
-    r"%USERPROFILE%\AppData\Local\Programs",
+    os.path.expanduser(r"~\AppData\Local\Android\Sdk"),
+    os.path.expanduser(r"~\AppData\Local\Programs"),
     r"D:\Android", r"E:\Android", r"D:\SDK", r"E:\SDK",
     r"C:\LDPlayer", r"C:\LDPlayer9", r"D:\LDPlayer", r"E:\LDPlayer",
     r"C:\Program Files\BlueStacks_nxt",
@@ -70,7 +70,7 @@ print()
 print("=" * 70)
 print("五、Android SDK / NDK 探测")
 print("=" * 70)
-for sdk in [r"%USERPROFILE%\AppData\Local\Android\Sdk", r"D:\Android\Sdk", r"E:\Android\Sdk"]:
+for sdk in [os.path.expanduser(r"~\AppData\Local\Android\Sdk"), r"D:\Android\Sdk", r"E:\Android\Sdk"]:
     if os.path.isdir(sdk):
         print(f"  SDK: {sdk}")
         for sub in ("platform-tools", "ndk", "build-tools", "platforms", "cmdline-tools"):

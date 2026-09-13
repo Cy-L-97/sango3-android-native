@@ -11,8 +11,8 @@ print("=" * 74)
 print("1) SSH 工具（ssh-keygen / ssh / git 的 ssh）")
 print("=" * 74)
 CAND = [
-    r"%USERPROFILE%\.workbuddy\binaries\PortableGit\versions\1.2.0\usr\bin\ssh-keygen.exe",
-    r"%USERPROFILE%\.workbuddy\binaries\PortableGit\versions\1.2.0\usr\bin\ssh.exe",
+    os.path.expanduser(r"~\.workbuddy\binaries\PortableGit\versions\1.2.0\usr\bin\ssh-keygen.exe"),
+    os.path.expanduser(r"~\.workbuddy\binaries\PortableGit\versions\1.2.0\usr\bin\ssh.exe"),
     r"C:\Program Files\Git\usr\bin\ssh-keygen.exe",
     r"C:\Windows\System32\OpenSSH\ssh-keygen.exe",
     r"C:\Windows\System32\OpenSSH\ssh.exe",
@@ -26,7 +26,7 @@ for p in CAND:
         print(f"  · 无 {p}")
 
 # 通配兜底
-for pat in [r"%USERPROFILE%\.workbuddy\binaries\PortableGit\**\ssh-keygen.exe",
+for pat in [os.path.expanduser(r"~\.workbuddy\binaries\PortableGit\**\ssh-keygen.exe"),
             r"C:\Windows\System32\OpenSSH\ssh*"]:
     for p in glob.glob(pat, recursive=True):
         if p not in found.values():

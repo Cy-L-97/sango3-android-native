@@ -42,7 +42,7 @@ print(f"  kernel32.lib: {libs[:3]}")
 print()
 print("=" * 70)
 print("4) CMake 检查")
-cm = r"%USERPROFILE%\.workbuddy\binaries\cmake\cmake-4.4.3-windows-x86_64\bin\cmake.exe"
+cm = os.path.expanduser(r"~\.workbuddy\binaries\cmake\cmake-4.4.3-windows-x86_64\bin\cmake.exe")
 print(f"  exists={os.path.isfile(cm)}")
 rc, out = sh(f'"{cm}" --version')
 print(f"  rc={rc}  {(out.strip().splitlines() or [""])[0]}")
