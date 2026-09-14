@@ -9,6 +9,7 @@
 A→B 递进：A 档（2~4 周 demo 级原生原型）→ B 档（4~6 月忠实还原）。
 **当前进度**（2026-09-14）：**M2 收口** + **M4 跑通** —— 主菜单已在雷电模拟器正常运行
 （`libmain.so` + `libSDL2.so`，截图 `tmp/android_shot2.png`）。
+仓库历史已净化（HEAD `1345450`，38 提交，`main`）—— 误入库的两张版权截图已从历史彻底移除。
 M2 遗留：地图地形层（BlkData + `Shape\SF\Map` 瓦片拼接）；M3 部分就绪；
 M4 遗留：字体（SDL2_ttf 需另编 FreeType）、EXTEND 宽高比。
 
@@ -70,6 +71,17 @@ M4 遗留：字体（SDL2_ttf 需另编 FreeType）、EXTEND 宽高比。
 - **pre-commit 钩子必装**：`python tools/install_hooks.py`（钩子随 .git 但不随仓库分发，跨机后要重装）
 - **本机路径一律用 `%USERPROFILE%` / `os.path.expanduser("~")`**（不入个人信息，跨机可移植）
 - **零散临时文件统一放项目根 `tmp/`**（已 gitignore，仅 `.gitkeep` 占位跨机携带）：本机生成、可重建的产物优先进 `tmp/`，不散落项目各处、不落 C 盘。
+- ⛔ **本机禁止执行 `git gc` 和 `git filter-repo`**（2026-09-14 实测：二者都会摧毁 `.git` ——
+  `fatal: not a git repository`，随后 `HEAD`/`config`/`refs`/`index`/`hooks` 全丢，只剩 `info/`+`objects/`；
+  filter-repo 因收尾固定调 `gc` 而同样不可用）。
+  需要改写历史时用**手工重建**（`read-tree`+`rm --cached`+`write-tree`+`commit-tree`+`update-ref`+`reset --hard`），
+  步骤见 `memory/2026-09-14.md`「收尾：仓库历史净化」。
+  `git reflog expire --expire=now --all` 是安全的，但**不要跟 `gc`**。
+  不做 gc 也能让远端干净：**`push` 只传可达对象**，refs 干净即可。
+- **改历史前必须全量备份到仓库外**（本次 `E:/sango3-backup-20260914/`）；
+  操作在**纯 ASCII 路径副本**上做，绕开中文路径附加坑。
+- 本机 shell 缺 `grep`/`ls`/`tail`/`sleep`/`dirname`，PowerShell 工具偶发无输出 → **一律改用 Python 调 subprocess**；
+  `robocopy` 退出码 1 是「成功」（0-7 均成功），别误判。
 
 ## 双机开发
 - 周末台式机（本环境，主开发机）
