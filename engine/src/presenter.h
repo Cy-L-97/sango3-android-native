@@ -60,4 +60,17 @@ void sango3_presenter_window_size(const Sango3Presenter *p, int32_t *w, int32_t 
 /* 当前统一缩放系数（逻辑→物理，取内容矩形边长 / 逻辑边长）。 */
 float sango3_presenter_scale(const Sango3Presenter *p);
 
+/* 指针状态（每次 frame() 后更新，坐标已反算到**逻辑空间**）。
+ * lclick/rclick 是"按下边沿"，每帧自动清零 —— 交互判定用边沿而非电平。 */
+typedef struct {
+    float lx, ly;   /* 逻辑坐标 */
+    int   inside;   /* 是否落在逻辑画布内 */
+    int   ldown;    /* 左键当前按下 */
+    int   rdown;    /* 右键当前按下 */
+    int   lclick;   /* 本帧发生左键按下 */
+    int   rclick;   /* 本帧发生右键按下 */
+} S3Pointer;
+
+void sango3_presenter_pointer(const Sango3Presenter *p, S3Pointer *out);
+
 #endif /* SANGO3_PRESENTER_H */

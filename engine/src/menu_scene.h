@@ -44,6 +44,13 @@ typedef void (*S3MenuDrawText)(void *ud, Sango3Canvas *cv, const char *utf8,
                                int32_t x, int32_t y, int32_t w, int32_t h,
                                uint32_t rgb, int font, uint32_t style);
 
+/* 逐控件状态（悬停/按下）：0=normal 1=focus 2=down 3=disable；为空则用 ms->state。 */
+typedef int (*S3MenuStateOf)(void *ud, uint32_t win_id);
+
+typedef struct S3MenuCacheEnt S3MenuCacheEnt;
+
+#define S3_MENU_CACHE_MAX 64
+
 typedef struct {
     const S3UiLayout *layout;
 
@@ -51,9 +58,15 @@ typedef struct {
     void             *asset_ud;
     S3MenuDrawText    draw_text;    /* 可空 */
     void             *text_ud;
+    S3MenuStateOf     state_of;     /* 可空：逐控件状态（交互态） */
+    void             *state_ud;
 
     int32_t           root_id;      /* 要渲染的根窗口；默认 1（主菜单） */
-    int               state;        /* 0=normal 1=focus 2=down 3=disable */
+    int               state;        /* 全局状态（state_of 为空时使用） */
+
+    /* 解码缓存（避免每帧重复解码大素材）；由 s3_menu_scene_release 释放 */
+    S3MenuCacheEnt   *cache[S3_MENU_CACHE_MAX];
+    int               n_cache;
 
     /* ---- 统计（sanity）---- */
     int32_t n_drawn;          /* 实际贴图次数 */
@@ -72,6 +85,14 @@ typedef struct {
 int32_t s3_menu_render(S3MenuScene *ms, Sango3Canvas *cv);
 
 const char *s3_menu_state_name(int state);
+
+/* 命中测试：逻辑坐标 (lx,ly) 下**最深**的命中控件 id（后画的优先，子覆盖父）；
+ * 无命中返回 0。供交互程序做悬停/点击判定。 */
+uint32_t s3_menu_hit_test(const S3UiLayout *L, uint32_t root_id,
+                          int32_t lx, int32_t ly);
+
+/* 释放解码缓存（程序收尾时调用；反复渲染同一菜单期间不必调用）。 */
+void s3_menu_scene_release(S3MenuScene *ms);
 
 #ifdef __cplusplus
 }

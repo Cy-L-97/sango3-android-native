@@ -127,6 +127,12 @@ if(SANGO3_HAVE_SDL)
   target_link_libraries(sango3view PRIVATE sango3_sdl sango3_present)
   # 主菜单渲染验证器接入字体层（有 SDL_ttf 时启用文本绘制，否则自动跳过）
   target_link_libraries(sango3menu PRIVATE sango3_present)
+
+  # 游戏主程序雏形（M2-6 交互 + M2-7 场景切换）：需要 SDL 窗口与字体层
+  add_executable(sango3app src/sango3app.c)
+  target_link_libraries(sango3app PRIVATE sango3_scene sango3_present)
+  set_target_properties(sango3app PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
   # 把 SDL2.dll 复制到产物目录，保证可执行文件能直接运行
   add_custom_command(TARGET sango3view POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

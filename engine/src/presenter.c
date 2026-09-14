@@ -22,12 +22,27 @@ struct Sango3Presenter {
     Sango3Viewport vp;                  /* 内容矩形数学（pillarbox/stretch） */
     uint32_t      drawn;
     int           valid;
+    /* 指针状态（逻辑坐标，每帧更新） */
+    float         ptr_lx, ptr_ly;
+    int           ptr_inside;
+    int           ptr_ldown, ptr_rdown;
+    int           ptr_lclick, ptr_rclick;
 };
 
 /* 按当前窗口尺寸重算内容矩形（pillarbox 居中 / stretch 铺满）。 */
 static void recompute_rect(Sango3Presenter *p) {
     sango3_viewport_init(&p->vp, p->logical_w, p->logical_h,
                          p->out_w, p->out_h, p->aspect, p->filter);
+}
+
+/* 物理鼠标坐标 → 逻辑坐标，并更新 inside。 */
+static void update_pointer(Sango3Presenter *p, int mx, int my) {
+    float lx = 0.0f, ly = 0.0f;
+    sango3_physical_to_logical(&p->vp, (float)mx, (float)my, &lx, &ly);
+    p->ptr_lx = lx;
+    p->ptr_ly = ly;
+    p->ptr_inside = (lx >= 0.0f && ly >= 0.0f &&
+                     lx < (float)p->logical_w && ly < (float)p->logical_h);
 }
 
 Sango3Presenter *sango3_presenter_new(int32_t logical_w, int32_t logical_h,
@@ -125,6 +140,8 @@ int sango3_presenter_frame(Sango3Presenter *p, uint32_t *out_drawn) {
     if (!p || !p->valid) return 1;
 
     int quit = 0;
+    p->ptr_lclick = 0;   /* 按下边沿每帧清零 */
+    p->ptr_rclick = 0;
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) quit = 1;
@@ -135,6 +152,19 @@ int sango3_presenter_frame(Sango3Presenter *p, uint32_t *out_drawn) {
             int w = 0, h = 0;
             SDL_GetWindowSize(p->win, &w, &h);
             if (w > 0 && h > 0) { p->out_w = (int32_t)w; p->out_h = (int32_t)h; recompute_rect(p); }
+        }
+        else if (e.type == SDL_MOUSEMOTION) {
+            update_pointer(p, e.motion.x, e.motion.y);
+        }
+        else if (e.type == SDL_MOUSEBUTTONDOWN) {
+            if (e.button.button == SDL_BUTTON_LEFT)  { p->ptr_ldown = 1; p->ptr_lclick = 1; }
+            if (e.button.button == SDL_BUTTON_RIGHT) { p->ptr_rdown = 1; p->ptr_rclick = 1; }
+            update_pointer(p, e.button.x, e.button.y);
+        }
+        else if (e.type == SDL_MOUSEBUTTONUP) {
+            if (e.button.button == SDL_BUTTON_LEFT)  p->ptr_ldown = 0;
+            if (e.button.button == SDL_BUTTON_RIGHT) p->ptr_rdown = 0;
+            update_pointer(p, e.button.x, e.button.y);
         }
     }
     if (quit) return 1;
@@ -170,4 +200,16 @@ void sango3_presenter_window_size(const Sango3Presenter *p, int32_t *w, int32_t 
 
 float sango3_presenter_scale(const Sango3Presenter *p) {
     return p ? p->vp.scale : 1.0f;
+}
+
+void sango3_presenter_pointer(const Sango3Presenter *p, S3Pointer *out) {
+    if (!out) return;
+    if (!p) { memset(out, 0, sizeof *out); return; }
+    out->lx     = p->ptr_lx;
+    out->ly     = p->ptr_ly;
+    out->inside = p->ptr_inside;
+    out->ldown  = p->ptr_ldown;
+    out->rdown  = p->ptr_rdown;
+    out->lclick = p->ptr_lclick;
+    out->rclick = p->ptr_rclick;
 }

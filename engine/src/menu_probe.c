@@ -133,6 +133,7 @@ int main(int argc, char **argv) {
     const char *fonts_dir = "engine/assets/fonts";
     const char *base      = "menu";
     int32_t     root_id   = 1;
+    int         state     = 0;   /* 0=normal 1=focus 2=down 3=disable（整屏统一态） */
     const char *paks[S3UI_MAX_PAK];
     int n_paks = 0;
 
@@ -142,6 +143,7 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[i], "--fonts-dir") && i + 1 < argc) { fonts_dir = argv[++i]; continue; }
         if (!strcmp(argv[i], "--name") && i + 1 < argc) { base = argv[++i]; continue; }
         if (!strcmp(argv[i], "--root") && i + 1 < argc) { root_id = atoi(argv[++i]); continue; }
+        if (!strcmp(argv[i], "--state") && i + 1 < argc) { state = atoi(argv[++i]); continue; }
         if (n_paks < S3UI_MAX_PAK) paks[n_paks++] = argv[i];
     }
     if (n_paks == 0) { fprintf(stderr, "no pak given\n"); return 2; }
@@ -217,7 +219,7 @@ int main(int argc, char **argv) {
     ms.read_asset = read_asset_cb;
     ms.asset_ud   = &ctx;
     ms.root_id    = root_id;
-    ms.state      = 0;
+    ms.state      = state;
 
 #ifdef SANGO3_HAVE_TTF
     FontCtx fc;

@@ -8,6 +8,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* 缓存条目：资源路径 → 已解码图像（图像内存归缓存所有） */
+struct S3MenuCacheEnt {
+    char     path[512];
+    ShpImage img;
+};
+
 const char *s3_menu_state_name(int state) {
     switch (state) {
         case 0: return "normal";
@@ -18,14 +24,21 @@ const char *s3_menu_state_name(int state) {
     }
 }
 
-/* 取四态中的某一态 */
+/* 取四态中的某一态。
+ * 原版语义：某态值为 "Normal" 表示**沿用 normal 态素材**（不是"无素材"），
+ * 因此非 normal 态遇到 "Normal" 必须回退到 normal —— 否则背景/按钮会整块消失。
+ * 真正的"无素材"写作 "Null"。 */
 static const S3UiState *pick_state(const S3UiIcon *ic, int state) {
+    const S3UiState *st;
     switch (state) {
-        case 1: return &ic->focus;
-        case 2: return &ic->down;
-        case 3: return &ic->disable;
-        default: return &ic->normal;
+        case 1: st = &ic->focus;   break;
+        case 2: st = &ic->down;    break;
+        case 3: st = &ic->disable; break;
+        default: st = &ic->normal; break;
     }
+    if (state != 0 && st->raw && strcmp(st->raw, "Normal") == 0)
+        return &ic->normal;
+    return st;
 }
 
 /* 素材名可能形如 "LogoFire01,"（尾部逗号表示序列），只取第一段并去空白。 */
@@ -72,6 +85,80 @@ static void build_asset_path(char *out, size_t cap, const char *dir, const char 
     snprintf(out, cap, "%s", buf);
 }
 
+/* ---------------------------------------------------------------- 缓存 */
+static const ShpImage *cache_find(S3MenuScene *ms, const char *path) {
+    for (int i = 0; i < ms->n_cache; ++i)
+        if (strcmp(ms->cache[i]->path, path) == 0) return &ms->cache[i]->img;
+    return NULL;
+}
+
+static void log_missing(S3MenuScene *ms, const char *path) {
+    if (ms->n_asset_missing < 8)
+        snprintf(ms->log_asset_missing[ms->n_asset_missing], 512, "%s", path);
+    ++ms->n_asset_missing;
+}
+
+static void log_decode(S3MenuScene *ms, const char *path, const char *err) {
+    if (ms->n_decode_fail < 8)
+        snprintf(ms->log_decode_fail[ms->n_decode_fail], 512, "%s (%s)", path, err ? err : "?");
+    ++ms->n_decode_fail;
+}
+
+/* 取素材（带缓存）并贴到 (dx,dy)。
+ * 返回 1=已绘制，-1=资源不存在，-2=解码失败。 */
+static int draw_asset(S3MenuScene *ms, Sango3Canvas *cv, const char *path,
+                      int32_t dx, int32_t dy) {
+    const ShpImage *hit = cache_find(ms, path);
+    if (hit) {
+        sango3_canvas_blit(cv, hit->rgba, (int32_t)hit->width, (int32_t)hit->height, dx, dy, 1);
+        return 1;
+    }
+
+    uint32_t len = 0;
+    uint8_t *raw = ms->read_asset ? ms->read_asset(ms->asset_ud, path, &len) : NULL;
+    if (!raw || !len) {
+        log_missing(ms, path);
+        if (raw) free(raw);
+        return -1;
+    }
+
+    /* 优先入缓存（大素材每帧重解码会拖慢帧率） */
+    if (ms->n_cache < S3_MENU_CACHE_MAX) {
+        S3MenuCacheEnt *e = (S3MenuCacheEnt *)calloc(1, sizeof *e);
+        if (e) {
+            const char *err = NULL;
+            if (shp_decode(raw, len, &e->img, &err)) {
+                snprintf(e->path, sizeof e->path, "%s", path);
+                ms->cache[ms->n_cache++] = e;
+                free(raw);
+                sango3_canvas_blit(cv, e->img.rgba,
+                                   (int32_t)e->img.width, (int32_t)e->img.height, dx, dy, 1);
+                return 1;
+            }
+            free(e);
+            log_decode(ms, path, err);
+            free(raw);
+            return -2;
+        }
+    }
+
+    /* 缓存不可用（满 / 分配失败）→ 临时解码后释放 */
+    {
+        ShpImage tmp;
+        const char *err = NULL;
+        if (!shp_decode(raw, len, &tmp, &err)) {
+            log_decode(ms, path, err);
+            free(raw);
+            return -2;
+        }
+        free(raw);
+        sango3_canvas_blit(cv, tmp.rgba, (int32_t)tmp.width, (int32_t)tmp.height, dx, dy, 1);
+        shp_free(&tmp);
+        return 1;
+    }
+}
+
+/* ---------------------------------------------------------------- 渲染 */
 static void draw_window(S3MenuScene *ms, Sango3Canvas *cv, uint32_t id, int depth) {
     if (depth > 16) return;
     const S3UiWindow *w = s3_ui_window(ms->layout, id);
@@ -86,38 +173,17 @@ static void draw_window(S3MenuScene *ms, Sango3Canvas *cv, uint32_t id, int dept
         if (!ic) {
             ++ms->n_icon_missing;
         } else {
-            const S3UiState *st = pick_state(ic, ms->state);
+            int st = ms->state_of ? ms->state_of(ms->state_ud, w->id) : ms->state;
+            if (st < 0 || st > 3) st = 0;
+            const S3UiState *state = pick_state(ic, st);
             char name[256];
-            first_token(st->raw, name, sizeof name);
+            first_token(state->raw, name, sizeof name);
             if (!is_placeholder(name)) {
                 char path[600];
                 build_asset_path(path, sizeof path, ic->dir, name);
-                uint32_t len = 0;
-                uint8_t *raw = ms->read_asset ? ms->read_asset(ms->asset_ud, path, &len) : NULL;
-                if (!raw || !len) {
-                    if (ms->n_asset_missing < 8)
-                        snprintf(ms->log_asset_missing[ms->n_asset_missing], 512, "%s", path);
-                    ++ms->n_asset_missing;
-                    if (raw) free(raw);
-                } else {
-                    ShpImage im;
-                    const char *err = NULL;
-                    if (shp_decode(raw, len, &im, &err)) {
-                        int32_t dx = w->range.x + ic->pos_x;
-                        int32_t dy = w->range.y + ic->pos_y;
-                        sango3_canvas_blit(cv, im.rgba,
-                                           (int32_t)im.width, (int32_t)im.height,
-                                           dx, dy, 1);
-                        ++ms->n_drawn;
-                        shp_free(&im);
-                    } else {
-                        if (ms->n_decode_fail < 8)
-                            snprintf(ms->log_decode_fail[ms->n_decode_fail], 512,
-                                     "%s (%s)", path, err ? err : "?");
-                        ++ms->n_decode_fail;
-                    }
-                    free(raw);
-                }
+                if (draw_asset(ms, cv, path,
+                               w->range.x + ic->pos_x, w->range.y + ic->pos_y) == 1)
+                    ++ms->n_drawn;
             }
         }
     }
@@ -150,4 +216,37 @@ int32_t s3_menu_render(S3MenuScene *ms, Sango3Canvas *cv) {
     if (ms->root_id <= 0) ms->root_id = 1;
     draw_window(ms, cv, (uint32_t)ms->root_id, 0);
     return ms->n_drawn;
+}
+
+/* ---------------------------------------------------------------- 命中测试 */
+static uint32_t hit_rec(const S3UiLayout *L, uint32_t id, int32_t lx, int32_t ly) {
+    const S3UiWindow *w = s3_ui_window(L, id);
+    if (!w) return 0;
+    /* 子在上（后画的优先），从后往前测 */
+    for (int k = (int)w->child_count - 1; k >= 0; --k) {
+        uint32_t h = hit_rec(L, w->child_ids[k], lx, ly);
+        if (h) return h;
+    }
+    if (w->range.w > 0 && w->range.h > 0 &&
+        lx >= w->range.x && lx < w->range.x + w->range.w &&
+        ly >= w->range.y && ly < w->range.y + w->range.h)
+        return w->id;
+    return 0;
+}
+
+uint32_t s3_menu_hit_test(const S3UiLayout *L, uint32_t root_id,
+                          int32_t lx, int32_t ly) {
+    if (!L) return 0;
+    if (root_id == 0) root_id = 1;
+    return hit_rec(L, root_id, lx, ly);
+}
+
+void s3_menu_scene_release(S3MenuScene *ms) {
+    if (!ms) return;
+    for (int i = 0; i < ms->n_cache; ++i) {
+        shp_free(&ms->cache[i]->img);
+        free(ms->cache[i]);
+        ms->cache[i] = NULL;
+    }
+    ms->n_cache = 0;
 }
