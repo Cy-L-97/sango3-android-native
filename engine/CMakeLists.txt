@@ -42,6 +42,12 @@ add_library(sango3_game STATIC
   src/gamedata.c)
 target_include_directories(sango3_game PUBLIC src)
 
+# ------------------------------------------------------------ 场景层（共享）
+# 控件树运行时 + 场景渲染（M2-5）：遍历 Menu.ini 控件树，按 Range 逐控件贴素材。
+# 依赖 ui（布局）+ data（SHP 解码）+ render（画布），供 sango3menu 与后续游戏主程序复用。
+add_library(sango3_scene STATIC src/menu_scene.c)
+target_link_libraries(sango3_scene PUBLIC sango3_game sango3_data sango3_render)
+
 # ---------------------------------------------------------------- 工具与可执行
 # PAK 容器检查器
 add_executable(sango3pak src/pak_lister.c)
@@ -67,7 +73,11 @@ target_link_libraries(sango3data PRIVATE sango3_game)
 add_executable(sango3ui src/ui_probe.c)
 target_link_libraries(sango3ui PRIVATE sango3_game sango3_data)
 
-set_target_properties(sango3pak sango3shp sango3view sango3scene sango3data sango3ui PROPERTIES
+# 主菜单场景渲染验证器（M2-5：控件树 → 640×480 逻辑画布 → raw/PNG）
+add_executable(sango3menu src/menu_probe.c)
+target_link_libraries(sango3menu PRIVATE sango3_scene)
+
+set_target_properties(sango3pak sango3shp sango3view sango3scene sango3data sango3ui sango3menu PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # ---------------------------------------------------------------- SDL2（可选）
@@ -115,6 +125,8 @@ if(SANGO3_HAVE_SDL)
 
   target_sources(sango3view PRIVATE src/sango3view_sdl.c)
   target_link_libraries(sango3view PRIVATE sango3_sdl sango3_present)
+  # 主菜单渲染验证器接入字体层（有 SDL_ttf 时启用文本绘制，否则自动跳过）
+  target_link_libraries(sango3menu PRIVATE sango3_present)
   # 把 SDL2.dll 复制到产物目录，保证可执行文件能直接运行
   add_custom_command(TARGET sango3view POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
