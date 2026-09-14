@@ -1,23 +1,22 @@
 /*
  * sango3app.c —— 游戏主程序雏形（M2-6 交互态 + M2-7 场景切换）
  *
- * 与 sango3menu（离线出图验证）的区别：本程序开**真实窗口**并处理鼠标交互。
+ * 与 sango3menu（离线出图）的区别：本程序开**真实窗口**并处理鼠标交互。
  *
- * 交互模型：
- *   1. 每帧把控件树渲染到 640×480 逻辑画布（menu_scene，逐控件状态由 state_of 提供）
- *   2. 上传 GPU 并呈现（presenter，任意物理分辨率 + 宽高比 + 滤镜）
- *   3. 取指针（presenter 已把物理坐标反算为**逻辑坐标**）→ hit_test 求悬停控件
- *   4. 悬停 → focus 素材；按下 → down 素材；抬起且仍在该控件 → 触发 command
- *   5. 场景栈：可点击的按钮若映射到下一屏则入栈切换；右键返回上一屏
+ * 场景模型（关键）：
+ *   原版同一时刻可**叠加显示多个 root 窗口**（Menu.ini 里 99 个 root 各自独立，
+ *   由引擎按需显示/隐藏）。因此一个"场景" = 一组 root，按数组顺序叠加渲染
+ *   （后面的在上）。例：存档界面 = 招牌 +「儲存進度01~10」+「讀取自動存檔」+「確定／取消」。
+ *   ⚠ 列表类控件（BUTTONREPORT / LIST）的内容是**运行时数据**，此处只渲染
+ *     Menu.ini 声明的框架与静态图元。
  *
- * 场景映射（cmd → root 窗口 id）目前只打通最能验证链路的一环：
- *   cmd=1「開始遊戲」→ [100]「選擇時期」
- * 其余 command 暂不切换（打印提示），待逐个确认目标界面后补全。
+ * 交互：悬停 → focus 素材；按下 → down 素材；抬起且仍在该控件 → 触发 command；
+ *       右键返回上一屏（场景栈）；ESC / 关窗退出。
  *
  * 用法：
  *   sango3app <pak1> [pak2 ...] [--scene N] [--out WxH] [--aspect a] [--filter f]
- *             [--fonts-dir D] [--encoding D] [--frames N] [--selftest]
- *   --selftest 不开窗口，仅对若干坐标跑 hit_test 并打印命中控件（离线校验交互逻辑）。
+ *             [--fonts-dir D] [--encoding D] [--entry X] [--frames N] [--selftest]
+ *   --selftest 不开窗口，对若干坐标跑 hit_test 并打印命中控件（离线校验交互逻辑）。
  */
 #include "ui.h"
 #include "text.h"
@@ -85,10 +84,7 @@ static int include_cb(const char *name, unsigned char **out_data, size_t *out_n,
 }
 
 /* ---------------------------------------------------------------- 文本层 */
-typedef struct {
-    S3Font *hd[3];
-    int     ready;
-} FontCtx;
+typedef struct { S3Font *hd[3]; int ready; } FontCtx;
 
 static int font_size_of(int font) {
     switch (font) { case 0: return 14; case 2: return 20; default: return 16; }
@@ -111,14 +107,40 @@ static void draw_text_cb(void *ud, Sango3Canvas *cv, const char *utf8,
     free(px);
 }
 
+/* ---------------------------------------------------------------- 场景表 */
+/* 一个场景 = 一组 root 窗口（数组顺序 = 叠加顺序，后面的在上）。
+ * 列表内容为运行时数据，此处仅渲染 Menu.ini 声明的框架与静态图元。 */
+static const uint32_t SC_MAIN[]   = { 1 };
+static const uint32_t SC_AGE[]    = { 100 };                 /* 選擇時期 */
+static const uint32_t SC_SAVE[]   = { 220, 201, 202, 203, 204, 205, 206, 207,
+                                      208, 209, 210, 240, 230 };  /* 存檔：招牌+10 槽+自動+確定/取消 */
+static const uint32_t SC_LOGIN[]  = { 400, 410 };            /* 登錄武將：面板 + 列表框架 */
+static const uint32_t SC_OPTION[] = { 300, 301, 302, 303, 304, 305, 306, 307,
+                                      308, 309 };            /* 設定選項 */
+
+typedef struct { const uint32_t *roots; int n; } Scene;
+
+static Scene scene_for_command(int32_t cmd) {
+    Scene s = { NULL, 0 };
+    switch (cmd) {
+        case 1: s.roots = SC_AGE;    s.n = (int)(sizeof SC_AGE    / sizeof *SC_AGE);    break;
+        case 2: s.roots = SC_SAVE;   s.n = (int)(sizeof SC_SAVE   / sizeof *SC_SAVE);   break;
+        case 3: s.roots = SC_LOGIN;  s.n = (int)(sizeof SC_LOGIN  / sizeof *SC_LOGIN);  break;
+        case 5: s.roots = SC_OPTION; s.n = (int)(sizeof SC_OPTION / sizeof *SC_OPTION); break;
+        default: break;   /* 其他 command 暂不切换 */
+    }
+    return s;
+}
+
 /* ---------------------------------------------------------------- App */
 typedef struct {
     const S3UiLayout *L;
-    uint32_t scene;          /* 当前 root 窗口 id */
-    uint32_t hover;
-    uint32_t press;
-    uint32_t stack[16];
-    int      sp;
+    const uint32_t   *roots;
+    int               n_roots;
+    uint32_t          hover;
+    uint32_t          press;
+    Scene             stack[16];
+    int               sp;
 } App;
 
 static int state_of_cb(void *ud, uint32_t id) {
@@ -128,33 +150,23 @@ static int state_of_cb(void *ud, uint32_t id) {
     return 0;
 }
 
-/* 主菜单按钮 command → 目标界面 root id。0 表示"暂无映射"。 */
-static uint32_t scene_for_command(int32_t cmd) {
-    switch (cmd) {
-        case 1: return 100;   /* 開始遊戲 → 選擇時期 */
-        default: return 0;
-    }
-}
-
 /* ---------------------------------------------------------------- selftest */
-static int run_selftest(const S3UiLayout *L, uint32_t scene) {
+static int run_selftest(const S3UiLayout *L, const uint32_t *roots, int n) {
     struct { int32_t x, y; const char *note; } pts[] = {
-        { 320, 208, "button1 center" },
-        { 320, 256, "button2 center" },
-        { 320, 304, "button3 center" },
-        { 320, 352, "button4 center" },
-        { 320, 400, "button5 center" },
+        { 320, 208, "btn1 (newgame)" },
+        { 320, 256, "btn2 (load)" },
+        { 320, 304, "btn3 (login)" },
+        { 320, 352, "btn4 (option)" },
+        { 320, 400, "btn5 (quit)" },
         { 600, 460, "version area" },
         {  60,  60, "title area" },
-        { 300, 300, "scene " },       /* scene 参数用于下一行 */
     };
-    printf("== hit_test selftest (scene=%u) ==\n", scene);
+    printf("== hit_test selftest (roots=%d) ==\n", n);
     for (size_t i = 0; i < sizeof pts / sizeof pts[0]; ++i) {
-        uint32_t hit = s3_menu_hit_test(L, scene, pts[i].x, pts[i].y);
+        uint32_t hit = s3_menu_hit_test_multi(L, roots, n, pts[i].x, pts[i].y);
         const S3UiWindow *w = hit ? s3_ui_window(L, hit) : NULL;
         printf("  (%3d,%3d) -> hit=%-5u cmd=%-4d %s\n",
-               pts[i].x, pts[i].y, hit,
-               w ? w->command : -1, pts[i].note);
+               pts[i].x, pts[i].y, hit, w ? w->command : -1, pts[i].note);
     }
     return 0;
 }
@@ -173,7 +185,7 @@ int main(int argc, char **argv) {
     const char *fonts_dir = "engine/assets/fonts";
     const char *paks[S3APP_MAX_PAK];
     int      n_paks   = 0;
-    int32_t  scene    = 1;
+    int32_t  scene_sel = 0;                  /* 0 = 主菜单 */
     int32_t  out_w    = 1280, out_h = 960;   /* 2× 逻辑，整数倍最清晰 */
     Sango3Aspect aspect = SANGO3_ASPECT_PILLARBOX;
     Sango3Filter filter = SANGO3_FILTER_NEAREST;
@@ -184,7 +196,7 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[i], "--entry") && i + 1 < argc) { entry = argv[++i]; continue; }
         if (!strcmp(argv[i], "--encoding") && i + 1 < argc) { enc_dir = argv[++i]; continue; }
         if (!strcmp(argv[i], "--fonts-dir") && i + 1 < argc) { fonts_dir = argv[++i]; continue; }
-        if (!strcmp(argv[i], "--scene") && i + 1 < argc) { scene = atoi(argv[++i]); continue; }
+        if (!strcmp(argv[i], "--scene") && i + 1 < argc) { scene_sel = atoi(argv[++i]); continue; }
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) { frames = (uint32_t)atoi(argv[++i]); continue; }
         if (!strcmp(argv[i], "--selftest")) { selftest = 1; continue; }
         if (!strcmp(argv[i], "--out") && i + 1 < argc) {
@@ -194,8 +206,7 @@ int main(int argc, char **argv) {
             continue;
         }
         if (!strcmp(argv[i], "--aspect") && i + 1 < argc) {
-            const char *a = argv[++i];
-            if (!strcmp(a, "stretch")) aspect = SANGO3_ASPECT_STRETCH;
+            if (!strcmp(argv[++i], "stretch")) aspect = SANGO3_ASPECT_STRETCH;
             continue;
         }
         if (!strcmp(argv[i], "--filter") && i + 1 < argc) {
@@ -256,21 +267,24 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    Scene main_scene = { SC_MAIN, (int)(sizeof SC_MAIN / sizeof *SC_MAIN) };
+    Scene start = main_scene;
+    static uint32_t one[1];
+    if (scene_sel > 0) {
+        one[0] = (uint32_t)scene_sel;
+        start.roots = one;
+        start.n = 1;
+    }
+
     if (selftest) {
-        int rc = run_selftest(&L, (uint32_t)scene);
+        int rc = run_selftest(&L, start.roots, start.n);
         s3_ui_free(&L); s3_ini_free(ini);
         for (int k = 0; k < ctx.n_ar; ++k) pak_close(&ctx.ar[k]);
         s3_text_shutdown();
         return rc;
     }
 
-    const S3UiWindow *root = s3_ui_window(&L, (uint32_t)scene);
-    int32_t cw = root && root->range.w > 0 ? root->range.w : 640;
-    int32_t ch = root && root->range.h > 0 ? root->range.h : 480;
-    if (cw > 640) cw = 640;
-    if (ch > 480) ch = 480;
-    if (cw < 320) cw = 640;   /* 非全屏界面（小面板）统一用 640 画布 */
-    if (ch < 240) ch = 480;
+    const int32_t cw = 640, ch = 480;   /* 场景均为整屏组合，画布固定逻辑尺寸 */
 
     Sango3Canvas *cv = sango3_canvas_new(cw, ch, 0, 0, 0);
     if (!cv) { fprintf(stderr, "canvas alloc failed\n"); s3_ui_free(&L); s3_ini_free(ini); for (int k = 0; k < ctx.n_ar; ++k) pak_close(&ctx.ar[k]); return 1; }
@@ -292,7 +306,8 @@ int main(int argc, char **argv) {
     App app;
     memset(&app, 0, sizeof app);
     app.L = &L;
-    app.scene = (uint32_t)scene;
+    app.roots = start.roots;
+    app.n_roots = start.n;
 
     S3MenuScene ms;
     memset(&ms, 0, sizeof ms);
@@ -303,13 +318,14 @@ int main(int argc, char **argv) {
     ms.state_ud   = &app;
     if (fc.ready) { ms.draw_text = draw_text_cb; ms.text_ud = &fc; }
 
-    printf("OK app started: scene=%u canvas=%dx%d out=%dx%d (ESC/close=quit, RMB=back)\n",
-           app.scene, cw, ch, out_w, out_h);
+    printf("OK app started: roots=%d canvas=%dx%d out=%dx%d (ESC/close=quit, RMB=back)\n",
+           app.n_roots, cw, ch, out_w, out_h);
 
     int prev_down = 0;
     uint32_t drawn = 0;
     for (;;) {
-        ms.root_id = (int32_t)app.scene;
+        ms.roots = app.roots;
+        ms.n_roots = app.n_roots;
         s3_menu_render(&ms, cv);
 
         sango3_presenter_upload(p, cv->px);
@@ -320,7 +336,8 @@ int main(int argc, char **argv) {
         sango3_presenter_pointer(p, &pt);
 
         uint32_t hit = pt.inside
-                     ? s3_menu_hit_test(&L, app.scene, (int32_t)pt.lx, (int32_t)pt.ly)
+                     ? s3_menu_hit_test_multi(&L, app.roots, app.n_roots,
+                                              (int32_t)pt.lx, (int32_t)pt.ly)
                      : 0;
         app.hover = hit;
 
@@ -330,12 +347,13 @@ int main(int argc, char **argv) {
                 const S3UiWindow *w = s3_ui_window(&L, app.press);
                 int32_t cmd = w ? w->command : -1;
                 if (cmd == 6) { printf("command=6 (quit)\n"); break; }
-                uint32_t next = scene_for_command(cmd);
-                if (next && s3_ui_window(&L, next)) {
-                    if (app.sp < 16) app.stack[app.sp++] = app.scene;
-                    app.scene = next;
+                Scene next = scene_for_command(cmd);
+                if (next.n > 0) {
+                    if (app.sp < 16) { app.stack[app.sp].roots = app.roots; app.stack[app.sp].n = app.n_roots; ++app.sp; }
+                    app.roots = next.roots;
+                    app.n_roots = next.n;
                     app.hover = app.press = 0;
-                    printf("scene -> %u (from cmd=%d)\n", app.scene, cmd);
+                    printf("scene -> %d roots (from cmd=%d)\n", app.n_roots, cmd);
                 } else if (cmd >= 0) {
                     printf("click id=%u cmd=%d (no scene mapping yet)\n", app.press, cmd);
                 }
@@ -345,9 +363,11 @@ int main(int argc, char **argv) {
         prev_down = pt.ldown;
 
         if (pt.rclick && app.sp > 0) {
-            app.scene = app.stack[--app.sp];
+            --app.sp;
+            app.roots = app.stack[app.sp].roots;
+            app.n_roots = app.stack[app.sp].n;
             app.hover = app.press = 0;
-            printf("scene <- %u (back)\n", app.scene);
+            printf("scene <- %d roots (back)\n", app.n_roots);
         }
 
         SDL_Delay(16);

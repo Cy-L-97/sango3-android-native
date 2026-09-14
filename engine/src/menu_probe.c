@@ -133,7 +133,8 @@ int main(int argc, char **argv) {
     const char *fonts_dir = "engine/assets/fonts";
     const char *base      = "menu";
     int32_t     root_id   = 1;
-    int         state     = 0;   /* 0=normal 1=focus 2=down 3=disable（整屏统一态） */
+    int         state     = 0;    /* 0=normal 1=focus 2=down 3=disable（整屏统一态） */
+    const char *roots_csv = NULL; /* --roots "1,2,3"：多 root 叠加场景 */
     const char *paks[S3UI_MAX_PAK];
     int n_paks = 0;
 
@@ -144,6 +145,7 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[i], "--name") && i + 1 < argc) { base = argv[++i]; continue; }
         if (!strcmp(argv[i], "--root") && i + 1 < argc) { root_id = atoi(argv[++i]); continue; }
         if (!strcmp(argv[i], "--state") && i + 1 < argc) { state = atoi(argv[++i]); continue; }
+        if (!strcmp(argv[i], "--roots") && i + 1 < argc) { roots_csv = argv[++i]; continue; }
         if (n_paks < S3UI_MAX_PAK) paks[n_paks++] = argv[i];
     }
     if (n_paks == 0) { fprintf(stderr, "no pak given\n"); return 2; }
@@ -201,9 +203,25 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* 多 root 场景（--roots）优先；否则单 root（--root，画布取该窗口尺寸） */
+    static uint32_t roots_buf[32];
+    int n_roots = 0;
+    if (roots_csv) {
+        const char *p = roots_csv;
+        while (*p && n_roots < 32) {
+            char *end = NULL;
+            long v = strtol(p, &end, 10);
+            if (end == p) break;
+            if (v > 0) roots_buf[n_roots++] = (uint32_t)v;
+            p = end;
+            while (*p == ',' || *p == ' ') ++p;
+        }
+    }
+
     const S3UiWindow *root = s3_ui_window(&L, (uint32_t)root_id);
-    int32_t cw = root && root->range.w > 0 ? root->range.w : 640;
-    int32_t ch = root && root->range.h > 0 ? root->range.h : 480;
+    int32_t cw = 640, ch = 480;
+    if (n_roots == 0 && root && root->range.w > 0) cw = root->range.w;
+    if (n_roots == 0 && root && root->range.h > 0) ch = root->range.h;
 
     Sango3Canvas *cv = sango3_canvas_new(cw, ch, 0, 0, 0);
     if (!cv) {
@@ -219,6 +237,8 @@ int main(int argc, char **argv) {
     ms.read_asset = read_asset_cb;
     ms.asset_ud   = &ctx;
     ms.root_id    = root_id;
+    ms.roots      = n_roots ? roots_buf : NULL;
+    ms.n_roots    = n_roots;
     ms.state      = state;
 
 #ifdef SANGO3_HAVE_TTF

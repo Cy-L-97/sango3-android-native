@@ -213,8 +213,13 @@ int32_t s3_menu_render(S3MenuScene *ms, Sango3Canvas *cv) {
     ms->n_drawn = ms->n_icon_missing = ms->n_asset_missing = 0;
     ms->n_decode_fail = ms->n_text = ms->n_containers = 0;
     if (!ms->layout || !cv) return 0;
-    if (ms->root_id <= 0) ms->root_id = 1;
-    draw_window(ms, cv, (uint32_t)ms->root_id, 0);
+    if (ms->roots && ms->n_roots > 0) {
+        for (int i = 0; i < ms->n_roots; ++i)      /* 数组顺序 = 叠加顺序 */
+            draw_window(ms, cv, ms->roots[i], 0);
+    } else {
+        if (ms->root_id <= 0) ms->root_id = 1;
+        draw_window(ms, cv, (uint32_t)ms->root_id, 0);
+    }
     return ms->n_drawn;
 }
 
@@ -239,6 +244,17 @@ uint32_t s3_menu_hit_test(const S3UiLayout *L, uint32_t root_id,
     if (!L) return 0;
     if (root_id == 0) root_id = 1;
     return hit_rec(L, root_id, lx, ly);
+}
+
+uint32_t s3_menu_hit_test_multi(const S3UiLayout *L,
+                                const uint32_t *roots, int n_roots,
+                                int32_t lx, int32_t ly) {
+    if (!L || !roots) return 0;
+    for (int i = n_roots - 1; i >= 0; --i) {   /* 后面的窗口在上，优先命中 */
+        uint32_t h = hit_rec(L, roots[i], lx, ly);
+        if (h) return h;
+    }
+    return 0;
 }
 
 void s3_menu_scene_release(S3MenuScene *ms) {

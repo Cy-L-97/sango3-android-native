@@ -61,7 +61,9 @@ typedef struct {
     S3MenuStateOf     state_of;     /* 可空：逐控件状态（交互态） */
     void             *state_ud;
 
-    int32_t           root_id;      /* 要渲染的根窗口；默认 1（主菜单） */
+    int32_t           root_id;      /* 单 root 场景（roots 为空时使用）；默认 1（主菜单） */
+    const uint32_t   *roots;        /* 多 root 场景：按数组顺序叠加渲染（后面的在上） */
+    int               n_roots;
     int               state;        /* 全局状态（state_of 为空时使用） */
 
     /* 解码缓存（避免每帧重复解码大素材）；由 s3_menu_scene_release 释放 */
@@ -90,6 +92,11 @@ const char *s3_menu_state_name(int state);
  * 无命中返回 0。供交互程序做悬停/点击判定。 */
 uint32_t s3_menu_hit_test(const S3UiLayout *L, uint32_t root_id,
                           int32_t lx, int32_t ly);
+
+/* 多 root 场景命中测试：按 roots 顺序，**后面的优先**（与原版叠加窗口一致）。 */
+uint32_t s3_menu_hit_test_multi(const S3UiLayout *L,
+                                const uint32_t *roots, int n_roots,
+                                int32_t lx, int32_t ly);
 
 /* 释放解码缓存（程序收尾时调用；反复渲染同一菜单期间不必调用）。 */
 void s3_menu_scene_release(S3MenuScene *ms);
