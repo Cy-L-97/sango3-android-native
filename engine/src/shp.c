@@ -70,10 +70,14 @@ int shp_decode(const void *data, size_t len, ShpImage *out, const char **err) {
         uint32_t end = (y + 1 < out->frame_cnt) ? out->offsets[y + 1] : (uint32_t)len;
         if (off + FRAME_HDR > len || end > len || end < off) { e = "frame range invalid"; goto fail; }
 
+        /* 帧数据区必须容纳 4 字节帧头；不足时该行留空 —— 容错，绝不越界读。
+         * ⚠ 这里曾有 size_t 下溢 bug：end-off-FRAME_HDR 为负时被当成巨大无符号数，
+         *   使 span 不被裁剪 → 越界读内存（root=20000/Statusbar 段错误即由此而来）。 */
         uint32_t span = rd_u16(d + off + 0x02);
         const uint8_t *body = d + off + FRAME_HDR;
-        size_t avail = (size_t)(end - off - FRAME_HDR) / 2;   /* 可用像素数 */
-        if (span > avail) span = (uint32_t)avail;             /* 容错裁剪 */
+        uint32_t avail = (end >= off + FRAME_HDR)
+                       ? (uint32_t)((end - off - FRAME_HDR) / 2) : 0;
+        if (span > avail) span = avail;             /* 容错裁剪（avail 可能为 0） */
 
         uint32_t npx = (span < out->width) ? span : out->width;
         uint8_t *row = out->rgba + (size_t)y * out->width * 4;

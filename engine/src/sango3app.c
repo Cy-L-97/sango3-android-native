@@ -117,6 +117,12 @@ static const uint32_t SC_SAVE[]   = { 220, 201, 202, 203, 204, 205, 206, 207,
 static const uint32_t SC_LOGIN[]  = { 400, 410 };            /* 登錄武將：面板 + 列表框架 */
 static const uint32_t SC_OPTION[] = { 300, 301, 302, 303, 304, 305, 306, 307,
                                       308, 309 };            /* 設定選項 */
+/* 战略 / 战术层：UI 面板组合。
+ * 地图地形层待接 —— 需要 BlkData 逆向 + Shape\SF\Map\*.shp 等距瓦片拼接。 */
+static const uint32_t SC_STRATEGY[] = { 20000, 7000 };       /* Statusbar + MISSION CONTROL */
+static const uint32_t SC_BATTLE[]   = { 34000, 30000 };      /* 戰術狀態欄 + 作戰指令 */
+
+#define NARR(a) ((int)(sizeof(a) / sizeof *(a)))
 
 typedef struct { const uint32_t *roots; int n; } Scene;
 
@@ -186,6 +192,7 @@ int main(int argc, char **argv) {
     const char *paks[S3APP_MAX_PAK];
     int      n_paks   = 0;
     int32_t  scene_sel = 0;                  /* 0 = 主菜单 */
+    const char *preset = NULL;               /* --preset 指定起始场景 */
     int32_t  out_w    = 1280, out_h = 960;   /* 2× 逻辑，整数倍最清晰 */
     Sango3Aspect aspect = SANGO3_ASPECT_PILLARBOX;
     Sango3Filter filter = SANGO3_FILTER_NEAREST;
@@ -197,6 +204,7 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[i], "--encoding") && i + 1 < argc) { enc_dir = argv[++i]; continue; }
         if (!strcmp(argv[i], "--fonts-dir") && i + 1 < argc) { fonts_dir = argv[++i]; continue; }
         if (!strcmp(argv[i], "--scene") && i + 1 < argc) { scene_sel = atoi(argv[++i]); continue; }
+        if (!strcmp(argv[i], "--preset") && i + 1 < argc) { preset = argv[++i]; continue; }
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) { frames = (uint32_t)atoi(argv[++i]); continue; }
         if (!strcmp(argv[i], "--selftest")) { selftest = 1; continue; }
         if (!strcmp(argv[i], "--out") && i + 1 < argc) {
@@ -267,10 +275,17 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    Scene main_scene = { SC_MAIN, (int)(sizeof SC_MAIN / sizeof *SC_MAIN) };
-    Scene start = main_scene;
+    Scene start = { SC_MAIN, NARR(SC_MAIN) };
     static uint32_t one[1];
-    if (scene_sel > 0) {
+    if (preset) {
+        if      (!strcmp(preset, "main"))     start = (Scene){ SC_MAIN,     NARR(SC_MAIN) };
+        else if (!strcmp(preset, "age"))      start = (Scene){ SC_AGE,      NARR(SC_AGE) };
+        else if (!strcmp(preset, "save"))     start = (Scene){ SC_SAVE,     NARR(SC_SAVE) };
+        else if (!strcmp(preset, "login"))    start = (Scene){ SC_LOGIN,    NARR(SC_LOGIN) };
+        else if (!strcmp(preset, "option"))   start = (Scene){ SC_OPTION,   NARR(SC_OPTION) };
+        else if (!strcmp(preset, "strategy")) start = (Scene){ SC_STRATEGY, NARR(SC_STRATEGY) };
+        else if (!strcmp(preset, "battle"))   start = (Scene){ SC_BATTLE,   NARR(SC_BATTLE) };
+    } else if (scene_sel > 0) {
         one[0] = (uint32_t)scene_sel;
         start.roots = one;
         start.n = 1;
