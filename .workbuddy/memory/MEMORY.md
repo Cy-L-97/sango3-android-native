@@ -1,8 +1,14 @@
 # Sango3 Android Native Port — Long-term Notes
 
+## 新会话 / 换机续接（先读）
+1. 本文件（MEMORY.md，长期账本）→ 2. 最近一篇日志 `memory/YYYY-MM-DD.md` → 3. **`docs/项目约定.md`（规则与口径，用户要求"必须遵守"）**。
+   再按任务查：`docs/分辨率与高清化架构.md` / `docs/必杀技学习规则.md` / `docs/UI布局与Menu.ini.md`。
+   上下文丢失不影响续接；**事实以文档为准**，不依赖聊天记录。
+
 ## 路线
 A→B 递进：A 档（2~4 周 demo 级原生原型）→ B 档（4~6 月忠实还原）。
-**当前进度**：M2-4 完成（UI 布局解析 + C/Python 逐字段对照全过）；M2 剩余：控件树运行时 + 图元渲染。
+**当前进度**（2026-09-14）：M2-4 完成（UI 布局 11530 项全过）；M2 剩余：控件树运行时 + 图元渲染；
+M3 部分就绪（字体资产 + 繁→简映射表已生成）；M4 安卓集成尚未启动。
 
 ## A 档里程碑
 - **M0**（已完）格式破解 + 分辨率无关渲染骨架
@@ -13,7 +19,7 @@ A→B 递进：A 档（2~4 周 demo 级原生原型）→ B 档（4~6 月忠实�
   - **GPU 路径 A 已完成**：`engine/src/presenter.c/.h`（逻辑画布作 SDL 静态纹理上传，GPU 按宽高比/滤镜缩放，窗口可拖动缩放）；`sango3view show` 默认开 2K 窗口，支持 `--out/--aspect/--filter`；dummy 驱动下验证通过（窗口物理尺寸/内容矩形/帧数均符合公式）
   - 顺带修正旧 `sango3view_sdl.c` 的纹理格式 bug（误用 `ABGR8888`，应为 `RGBA8888`）
   - SDL_ttf 字体层已完成：`font.c/.h`（像素/高清双模式 + 回退链），中文自检通过
-- **M2**（进行中）场景驱动（地图 + 战场）+ UI 框架
+- **M2**（UI 布局系统已完成；场景驱动进行中）UI 框架（读 `Menu.ini`，M2-1~M2-4 已完成）+ 场景驱动（地图 + 战场，待做）
   - **M2-1~M2-4 已完成**：`ini.c` 支持 `#include` 递归展开；`ui.c/.h` 解析 Menu.ini；
     `ui_probe.c` 验证器；`tools/build_ui.py` + `tools/verify_ui_c.py`
     **11530 项字段级 C↔Python 完全一致**
@@ -40,14 +46,21 @@ A→B 递进：A 档（2~4 周 demo 级原生原型）→ B 档（4~6 月忠实�
 ## 工程红线
 - **C 与 Python 基准必须 100% 一致**：数据层改动后跑 `tools/verify_data_c.py`（9024 项）；
   UI 布局改动后跑 `tools/verify_ui_c.py`（11530 项）。两者都要绿。
-- **不直接 git push GitHub**（用户决定不推送，本地继续）
+- **推送策略：B —— GitHub 私有仓库 + SSH**（2026-09-14 用户确认，沿用 9-13 净化成果）；本机 `github.com:22` 被拒 → 走 `ssh.github.com:443`（已配 `~/.ssh/config`）
 - **pre-commit 钩子必装**：`python tools/install_hooks.py`（钩子随 .git 但不随仓库分发，跨机后要重装）
 - **本机路径一律用 `%USERPROFILE%` / `os.path.expanduser("~")`**（不入个人信息，跨机可移植）
 - **零散临时文件统一放项目根 `tmp/`**（已 gitignore，仅 `.gitkeep` 占位跨机携带）：本机生成、可重建的产物优先进 `tmp/`，不散落项目各处、不落 C 盘。
 
 ## 双机开发
-- 周末台式机（本环境）
-- 工作日笔记本（雷电模拟器路径 `F:\leidian\LDPlayer9`）
+- 周末台式机（本环境，主开发机）
+- 雷电模拟器在本机：`F:\leidian\LDPlayer9`（含 dnplayer.exe / ldconsole.exe / 自带 adb.exe），2026-09-13 已实机核实。
+- 早前记忆误把雷电归到"工作日笔记本"，以此条为准。
+
+## 待启动：Android 集成（A 档"模拟器最小 APK"）
+- 状态：**尚未启动**。当前引擎只在 PC（MSVC）验证；Android 构建链未接（`engine/CMakeLists.txt` 无 NDK 分支，`third_party/SDL2-src/android-project/app/jni/src/CMakeLists.txt` 仍是 `YourSourceHere.c` 占位，`SDL2_ttf` 未纳入 NDK 构建）。
+- 本机（台式）**尚未安装 Android NDK/SDK**（2026-09-13 核实：`ANDROID_NDK`/`ANDROID_HOME` 为 None，常见路径均不存在）。
+- 本机已具备：雷电模拟器 `F:\leidian\LDPlayer9`（dnplayer / ldconsole / 自带 adb.exe）；故集成可**全程本机闭环**：装 NDK → 接构建链编 APK → `F:\leidian\LDPlayer9\adb.exe install` 装本机雷电（默认 127.0.0.1:5555）。
+- 起点（用户 2026-09-13 确认"明天继续"）：先写 NDK/CMake 分支 + 最小可见场景 C 代码 + 资源打包脚本，待装好 NDK 即可一键编 APK 装本机雷电验证。
 
 ## 数据确定性产物清单
 - `engine/assets/encoding/big5_cp950.bin` ← `tools/gen_encoding_tables.py`
