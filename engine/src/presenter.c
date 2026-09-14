@@ -110,6 +110,12 @@ Sango3Presenter *sango3_presenter_new(int32_t logical_w, int32_t logical_h,
                        ? SDL_ScaleModeNearest : SDL_ScaleModeLinear;
     SDL_SetTextureScaleMode(p->tex, sm);
 
+    /* 以实际窗口尺寸为准：Android 全屏 / 高 DPI 下，SDL_CreateWindow 的尺寸可能被系统改写 */
+    {
+        int aw = 0, ah = 0;
+        SDL_GetWindowSize(p->win, &aw, &ah);
+        if (aw > 0 && ah > 0) { p->out_w = (int32_t)aw; p->out_h = (int32_t)ah; }
+    }
     recompute_rect(p);
     p->valid = 1;
     return p;

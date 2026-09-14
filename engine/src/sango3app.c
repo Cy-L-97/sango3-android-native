@@ -179,13 +179,6 @@ static int run_selftest(const S3UiLayout *L, const uint32_t *roots, int n) {
 
 /* ---------------------------------------------------------------- main */
 int main(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr,
-                "usage: sango3app <pak1> [pak2 ...] [--scene N] [--out WxH] "
-                "[--aspect pillarbox|stretch] [--filter nearest|bilinear|sharp] "
-                "[--fonts-dir D] [--encoding D] [--entry X] [--frames N] [--selftest]\n");
-        return 2;
-    }
     const char *entry     = "Setting\\Menu.ini";
     const char *enc_dir   = "engine/assets/encoding";
     const char *fonts_dir = "engine/assets/fonts";
@@ -199,6 +192,24 @@ int main(int argc, char **argv) {
     uint32_t frames   = 0;
     int      selftest = 0;
 
+#ifdef SANGO3_ANDROID
+    /* Android 无命令行参数：资源固定在外部存储 /sdcard/Sango3/（由 adb push 放入）。
+     * 窗口尺寸交给设备（presenter 会按实际窗口尺寸重算视口）。 */
+    (void)argc; (void)argv;
+    paks[0] = "/sdcard/Sango3/Sango3.PAK";
+    paks[1] = "/sdcard/Sango3/Update.PAK";
+    n_paks  = 2;
+    enc_dir   = "/sdcard/Sango3/encoding";
+    fonts_dir = "/sdcard/Sango3/fonts";
+    out_w = 0; out_h = 0;                    /* 0 → 以实际窗口尺寸为准 */
+#else
+    if (argc < 2) {
+        fprintf(stderr,
+                "usage: sango3app <pak1> [pak2 ...] [--scene N] [--out WxH] "
+                "[--aspect pillarbox|stretch] [--filter nearest|bilinear|sharp] "
+                "[--fonts-dir D] [--encoding D] [--entry X] [--frames N] [--selftest]\n");
+        return 2;
+    }
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--entry") && i + 1 < argc) { entry = argv[++i]; continue; }
         if (!strcmp(argv[i], "--encoding") && i + 1 < argc) { enc_dir = argv[++i]; continue; }
@@ -226,6 +237,7 @@ int main(int argc, char **argv) {
         if (n_paks < S3APP_MAX_PAK) paks[n_paks++] = argv[i];
     }
     if (n_paks == 0) { fprintf(stderr, "no pak given\n"); return 2; }
+#endif
 
     if (s3_text_init(enc_dir) != 0 || !s3_text_ready()) {
         fprintf(stderr, "text_init failed (encoding dir: %s)\n", enc_dir);
