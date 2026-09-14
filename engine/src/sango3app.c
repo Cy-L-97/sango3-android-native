@@ -31,6 +31,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef SANGO3_ANDROID
+#include <android/log.h>
+#define ALOG(...) __android_log_print(ANDROID_LOG_INFO, "sango3", __VA_ARGS__)
+#else
+#define ALOG(...) do { } while (0)
+#endif
+
 #define S3APP_MAX_PAK 8
 
 typedef struct {
@@ -196,11 +203,14 @@ int main(int argc, char **argv) {
     /* Android 无命令行参数：资源固定在外部存储 /sdcard/Sango3/（由 adb push 放入）。
      * 窗口尺寸交给设备（presenter 会按实际窗口尺寸重算视口）。 */
     (void)argc; (void)argv;
-    paks[0] = "/sdcard/Sango3/Sango3.PAK";
-    paks[1] = "/sdcard/Sango3/Update.PAK";
+    /* 资源放**应用外部私有目录**（/sdcard/Android/data/<pkg>/files/）：
+     * 该目录应用自身无需运行时存储权限即可读写，adb push 也能直接写入；
+     * 公共 /sdcard/ 在 Android 6+ 需运行时授权，早期会因读不到资源而立即退出。 */
+    paks[0] = "/sdcard/Android/data/org.libsdl.app/files/Sango3/Sango3.PAK";
+    paks[1] = "/sdcard/Android/data/org.libsdl.app/files/Sango3/Update.PAK";
     n_paks  = 2;
-    enc_dir   = "/sdcard/Sango3/encoding";
-    fonts_dir = "/sdcard/Sango3/fonts";
+    enc_dir   = "/sdcard/Android/data/org.libsdl.app/files/Sango3/encoding";
+    fonts_dir = "/sdcard/Android/data/org.libsdl.app/files/Sango3/fonts";
     out_w = 0; out_h = 0;                    /* 0 → 以实际窗口尺寸为准 */
 #else
     if (argc < 2) {
@@ -241,6 +251,7 @@ int main(int argc, char **argv) {
 
     if (s3_text_init(enc_dir) != 0 || !s3_text_ready()) {
         fprintf(stderr, "text_init failed (encoding dir: %s)\n", enc_dir);
+        ALOG("text_init failed: %s", enc_dir);
         return 1;
     }
 
@@ -250,6 +261,7 @@ int main(int argc, char **argv) {
         const char *err = NULL;
         if (!pak_open(paks[i], &ctx.ar[ctx.n_ar], &err)) {
             fprintf(stderr, "pak_open failed: %s (%s)\n", paks[i], err ? err : "?");
+            ALOG("pak_open failed: %s (%s)", paks[i], err ? err : "?");
             for (int k = 0; k < ctx.n_ar; ++k) pak_close(&ctx.ar[k]);
             return 1;
         }
@@ -260,6 +272,7 @@ int main(int argc, char **argv) {
     uint8_t *data = pak_get(&ctx, entry, &len);
     if (!data) {
         fprintf(stderr, "entry not found: %s\n", entry);
+        ALOG("entry not found: %s", entry);
         for (int k = 0; k < ctx.n_ar; ++k) pak_close(&ctx.ar[k]);
         return 1;
     }
@@ -347,6 +360,7 @@ int main(int argc, char **argv) {
 
     printf("OK app started: roots=%d canvas=%dx%d out=%dx%d (ESC/close=quit, RMB=back)\n",
            app.n_roots, cw, ch, out_w, out_h);
+    ALOG("app started: roots=%d canvas=%dx%d out=%dx%d", app.n_roots, cw, ch, out_w, out_h);
 
     int prev_down = 0;
     uint32_t drawn = 0;

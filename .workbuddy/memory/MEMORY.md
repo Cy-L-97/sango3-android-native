@@ -7,9 +7,10 @@
 
 ## 路线
 A→B 递进：A 档（2~4 周 demo 级原生原型）→ B 档（4~6 月忠实还原）。
-**当前进度**（2026-09-14）：**M2 收口** —— 99 个界面可渲染 + 场景切换（root 组）+ 交互态；
-战略 / 战术 UI 面板可预览；**地图地形层（BlkData 逆向 + `Shape\SF\Map` 等距瓦片拼接）留待后续**。
-M3 部分就绪（字体资产 + 繁→简映射表）；**M4 已启动**（NDK r27c 下载中；雷电 `F:\leidian\LDPlayer9` 就位）。
+**当前进度**（2026-09-14）：**M2 收口** + **M4 跑通** —— 主菜单已在雷电模拟器正常运行
+（`libmain.so` + `libSDL2.so`，截图 `tmp/android_shot2.png`）。
+M2 遗留：地图地形层（BlkData + `Shape\SF\Map` 瓦片拼接）；M3 部分就绪；
+M4 遗留：字体（SDL2_ttf 需另编 FreeType）、EXTEND 宽高比。
 
 ## A 档里程碑
 - **M0**（已完）格式破解 + 分辨率无关渲染骨架
@@ -75,11 +76,24 @@ M3 部分就绪（字体资产 + 繁→简映射表）；**M4 已启动**（NDK 
 - 雷电模拟器在本机：`F:\leidian\LDPlayer9`（含 dnplayer.exe / ldconsole.exe / 自带 adb.exe），2026-09-13 已实机核实。
 - 早前记忆误把雷电归到"工作日笔记本"，以此条为准。
 
-## 待启动：Android 集成（A 档"模拟器最小 APK"）
-- 状态：**尚未启动**。当前引擎只在 PC（MSVC）验证；Android 构建链未接（`engine/CMakeLists.txt` 无 NDK 分支，`third_party/SDL2-src/android-project/app/jni/src/CMakeLists.txt` 仍是 `YourSourceHere.c` 占位，`SDL2_ttf` 未纳入 NDK 构建）。
-- 本机（台式）**尚未安装 Android NDK/SDK**（2026-09-13 核实：`ANDROID_NDK`/`ANDROID_HOME` 为 None，常见路径均不存在）。
-- 本机已具备：雷电模拟器 `F:\leidian\LDPlayer9`（dnplayer / ldconsole / 自带 adb.exe）；故集成可**全程本机闭环**：装 NDK → 接构建链编 APK → `F:\leidian\LDPlayer9\adb.exe install` 装本机雷电（默认 127.0.0.1:5555）。
-- 起点（用户 2026-09-13 确认"明天继续"）：先写 NDK/CMake 分支 + 最小可见场景 C 代码 + 资源打包脚本，待装好 NDK 即可一键编 APK 装本机雷电验证。
+## Android 集成（M4）—— ✅ 已跑通（2026-09-14）
+- **主菜单已在雷电模拟器正常运行**（截图 `tmp/android_shot2.png`，颜色/布局与 PC 一致）。
+- 工具链（均 E 盘，一次性部署）：
+  - NDK r27c `E:/android-ndk/android-ndk-r27c`
+  - JDK 17 `E:/android-sdk/jdk17/jdk-*`（**必须 11+**：d8/sdkmanager 需要，系统只有 JDK 8）
+  - SDK `E:/android-sdk/{cmdline-tools/latest, platform-tools, build-tools/34.0.0, platforms/android-34}`
+- 构建入口：**`tools/build_android.py`**（手工打包，**不依赖 gradle**；ASCII 工作区 `E:/sango3-android`
+  规避中文路径；`android/app/jni/CMakeLists.txt` 编 engine → `libmain.so`）。
+- 资源：adb push 到**应用外部私有目录** `/sdcard/Android/data/org.libsdl.app/files/Sango3/`
+  （公共 `/sdcard/` 需运行时存储权限 → 会导致启动即退出）。
+- **详见 `docs/Android构建.md`** —— 含 9 个坑点与两条非报错型坑：
+  ① ninja 需 `-DCMAKE_MAKE_PROGRAM` ② CMake 相对路径层级（三级）
+  ③ 脚本 rmtree 被安全策略拦截 → 改 `dirs_exist_ok` ④ manifest 需 `package` 属性
+  ⑤ android.jar 要直下 platform zip ⑥ javac 需 `-encoding utf-8`（SDLActivity.java 含 emoji）
+  ⑦ d8 需 JDK17（显式 `JAVA_HOME`）⑧ APK 必须含 `libSDL2.so`（Java `System.loadLibrary("SDL2")`）
+  ⑨ 资源路径用私有目录；另：`__android_log_print` 需链接 `log`；
+  **GLES 通道顺序相对 SDL 定义是反转的 → Android 用 `SDL_PIXELFORMAT_ABGR8888`**（否则整屏偏色）。
+- 已知限制：首版**无字体**（SDL2_ttf 的 Android 版需另编 FreeType）；EXTEND 宽高比未做。
 
 ## 数据确定性产物清单
 - `engine/assets/encoding/big5_cp950.bin` ← `tools/gen_encoding_tables.py`

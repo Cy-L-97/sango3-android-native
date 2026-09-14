@@ -48,19 +48,38 @@ CMAKE = first_dir(os.path.expanduser("~/.workbuddy/binaries/cmake/*/bin/cmake.ex
 NINJA = "C:/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe"
 
 
+# 子进程环境：d8 / sdkmanager 需要 Java 11+，必须显式指向 JDK 17（系统默认是 JDK 8）
+ENV = None
+
+
+def make_env():
+    env = dict(os.environ)
+    env["JAVA_HOME"] = JDK
+    env["ANDROID_SDK_ROOT"] = SDK
+    env["ANDROID_HOME"] = SDK
+    env["ANDROID_NDK_HOME"] = NDK
+    env["PATH"] = os.path.join(JDK, "bin") + os.pathsep + env.get("PATH", "")
+    return env
+
+
 def run(cmd, env=None, cwd=None, check=True, quiet=False):
+    env = env or ENV
+    # encoding/errors 必须显式指定：javac/aapt2 在中文 Windows 上会输出 GBK，按 UTF-8 解码会抛异常
+    kw = dict(env=env, cwd=cwd, capture_output=True, text=True,
+              encoding="utf-8", errors="replace")
     if isinstance(cmd, str):
         print(">>>", cmd[:200])
-        r = subprocess.run(cmd, shell=True, env=env, cwd=cwd, capture_output=True, text=True)
+        r = subprocess.run(cmd, shell=True, **kw)
     else:
         print(">>>", " ".join(cmd)[:200])
-        r = subprocess.run(cmd, env=env, cwd=cwd, capture_output=True, text=True)
-    if not quiet:
-        if r.stdout.strip():
-            print(r.stdout[-3000:])
+        r = subprocess.run(cmd, **kw)
+    out = r.stdout or ""
+    err = r.stderr or ""
+    if not quiet and out.strip():
+        print(out[-3000:])
     if r.returncode != 0:
-        if r.stderr.strip():
-            print("STDERR:", r.stderr[-2500:])
+        if err.strip():
+            print("STDERR:", err[-3000:])
         if check:
             raise SystemExit("FAILED rc=%d" % r.returncode)
     return r
@@ -86,17 +105,22 @@ def check_env():
 def sync_sources():
     """把 engine 源码 / android 工程 / SDL2 源码同步到 ASCII 工作区。"""
     os.makedirs(WORK, exist_ok=True)
+    # 第三项 always=False：SDL2 源码体积大，只在首次复制
     pairs = [
-        (os.path.join(ROOT, "engine", "src"), os.path.join(WORK, "engine", "src")),
-        (os.path.join(ROOT, "android"),       os.path.join(WORK, "android")),
-        (os.path.join(ROOT, "third_party", "SDL2-src"), os.path.join(WORK, "third_party", "SDL2-src")),
+        (os.path.join(ROOT, "engine", "src"), os.path.join(WORK, "engine", "src"), True),
+        (os.path.join(ROOT, "android"),       os.path.join(WORK, "android"),       True),
+        (os.path.join(ROOT, "third_party", "SDL2-src"),
+         os.path.join(WORK, "third_party", "SDL2-src"), False),
     ]
-    for src, dst in pairs:
+    for src, dst, always in pairs:
         if not os.path.isdir(src):
             continue
-        if os.path.isdir(dst):
-            shutil.rmtree(dst, ignore_errors=True)
-        shutil.copytree(src, dst, ignore=shutil.ignore_patterns("*.obj", "__pycache__"))
+        if not always and os.path.isdir(dst):
+            print("kept  :", os.path.relpath(dst, WORK))
+            continue
+        # 用 dirs_exist_ok 增量覆盖：不删旧目录（批量删除会被安全策略拦截），也更快
+        shutil.copytree(src, dst, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("*.obj", "__pycache__", "build"))
         print("synced:", os.path.relpath(dst, WORK))
 
 
@@ -107,6 +131,7 @@ def build_native(abi="x86_64", api=24):
     env["ANDROID_NDK_HOME"] = NDK
     env["JAVA_HOME"] = JDK
     run([CMAKE, "-G", "Ninja",
+         "-DCMAKE_MAKE_PROGRAM=" + NINJA,
          "-DCMAKE_TOOLCHAIN_FILE=" + tc,
          "-DANDROID_ABI=" + abi,
          "-DANDROID_PLATFORM=android-%d" % api,
@@ -122,12 +147,21 @@ def build_native(abi="x86_64", api=24):
 
 def build_apk(lib_so, abi="x86_64", api=24):
     tmpl = os.path.join(WORK, "third_party", "SDL2-src", "android-project", "app", "src", "main")
-    manifest = os.path.join(tmpl, "AndroidManifest.xml")
     resdir = os.path.join(tmpl, "res")
     javadir = os.path.join(tmpl, "java")
     android_jar = os.path.join(PLAT, "android.jar")
     out = os.path.join(WORK, "build", "apk")
     os.makedirs(out, exist_ok=True)
+
+    # aapt2 手工流程要求 manifest 带 package 属性（SDL2 模板把它留给 gradle 的 namespace）
+    src_manifest = os.path.join(tmpl, "AndroidManifest.xml")
+    manifest = os.path.join(out, "AndroidManifest.xml")
+    with open(src_manifest, encoding="utf-8") as f:
+        mtxt = f.read()
+    if "package=" not in mtxt.split(">", 1)[0]:
+        mtxt = mtxt.replace("<manifest", '<manifest package="%s"' % PKG, 1)
+    with open(manifest, "w", encoding="utf-8") as f:
+        f.write(mtxt)
     res_zip = os.path.join(out, "res.zip")
     base_apk = os.path.join(out, "base.apk")
     gen = os.path.join(out, "gen")
@@ -157,7 +191,8 @@ def build_apk(lib_so, abi="x86_64", api=24):
     javac = os.path.join(JDK, "bin", "javac.exe")
     with open(os.path.join(out, "srcs.txt"), "w", encoding="utf-8") as f:
         f.write("\n".join(srcs))
-    run([javac, "-nowarn", "-source", "8", "-target", "8",
+    # -encoding utf-8 必须显式指定：SDLActivity.java 含 emoji，javac 默认按平台编码(GBK)读会报"不可映射字符"
+    run([javac, "-nowarn", "-encoding", "utf-8", "-source", "8", "-target", "8",
          "-classpath", android_jar, "-d", classes, "@" + os.path.join(out, "srcs.txt")])
     # 4) d8 → dex
     classfiles = []
@@ -174,8 +209,16 @@ def build_apk(lib_so, abi="x86_64", api=24):
     import zipfile
     with zipfile.ZipFile(apk, "a", zipfile.ZIP_DEFLATED) as z:
         z.write(os.path.join(dexdir, "classes.dex"), "classes.dex")
-        if lib_so:
-            z.write(lib_so, "lib/%s/libmain.so" % abi)
+        # 所有 native 共享库都要打进 APK —— SDL2 是独立的 libSDL2.so，
+        # Java 侧 SDLActivity 会 System.loadLibrary("SDL2")，缺了会在启动时报
+        # couldn't find "libSDL2.so"。
+        native = glob.glob(os.path.join(WORK, "build", "native", "**", "lib*.so"),
+                           recursive=True)
+        if lib_so and lib_so not in native:
+            native.append(lib_so)
+        for so in native:
+            z.write(so, "lib/%s/%s" % (abi, os.path.basename(so)))
+            print("  + lib/%s/%s" % (abi, os.path.basename(so)))
     print("assembled:", apk)
     return apk
 
@@ -200,6 +243,8 @@ def sign_apk(apk):
 
 
 def main():
+    global ENV
+    ENV = make_env()
     if "--clean" in sys.argv:
         shutil.rmtree(WORK, ignore_errors=True)
         print("cleaned", WORK)

@@ -1,0 +1,121 @@
+# Android 构建（M4）—— 不依赖 gradle 的手工打包流程
+
+> 状态：**已跑通**（2026-09-14，主菜单已在雷电模拟器正常运行）。
+> 定位：本文件是可复用操作手册；工具链一次性部署，之后 `python tools/build_android.py --install` 一条命令出包。
+
+---
+
+## 一、为什么手工打包（而不是 gradle）
+
+gradle 需要联网拉 AGP / gradle 发行包 + 依赖解析，链路长、易受网络与 JDK 版本影响。
+本流程只用 **dl.google.com 的官方组件**（NDK / build-tools / platform）+ JDK，可控性好：
+
+```
+NDK/CMake 交叉编译 → aapt2（资源）→ javac（Java）→ d8（dex）→ 组装 → zipalign → apksigner
+```
+
+代价是要自己处理 9 个坑（见第四节），好处是**任何一步失败都能单独定位与重试**。
+
+---
+
+## 二、工具链（一次性部署，均在 E 盘，不落 C 盘）
+
+| 组件 | 位置 | 说明 |
+|---|---|---|
+| NDK | `E:/android-ndk/android-ndk-r27c` | r27c，745MB；解压即用 |
+| JDK 17 | `E:/android-sdk/jdk17/jdk-17.0.20.1+1` | **必须 11+**：d8 / sdkmanager 需要；系统自带的是 JDK 8 |
+| SDK cmdline-tools | `E:/android-sdk/cmdline-tools/latest` | sdkmanager |
+| platform-tools | `E:/android-sdk/platform-tools` | adb 等 |
+| build-tools | `E:/android-sdk/build-tools/34.0.0` | aapt2 / d8 / zipalign / apksigner |
+| platform | `E:/android-sdk/platforms/android-34` | android.jar |
+| CMake / Ninja | WorkBuddy 的 cmake + VS 自带 ninja | 见 `tools/build_android.py` 顶部常量 |
+
+> NDK 与 build-tools 用**官方 zip 直解**比 sdkmanager 快得多（sdkmanager 在本机很慢且易中断）；
+> platform 的直链命名不规则，可从 `repository2-3.xml` 里查（见第六节）。
+
+---
+
+## 三、项目侧结构
+
+```
+android/app/jni/CMakeLists.txt   # engine → libmain.so（SDL2 由源码一并编译）
+tools/build_android.py           # 一键构建 + 可选安装
+```
+
+要点：
+- 与 PC 端**共用同一套 `engine/src`**（一套代码两端编译）；差异只在编译宏与资源路径。
+- `SANGO3_ANDROID` 宏让 `sango3app.c` 走 Android 分支（固定资源路径、不解析 argv）。
+- 首版**不含 SDL2_ttf**（其 Android 版需另编 FreeRTYPE）→ 不定义 `SANGO3_HAVE_TTF`，文本层自动跳过。
+- CMake 必须传 `-DCMAKE_MAKE_PROGRAM=<ninja>`，否则报 `unable to find a build program corresponding to "Ninja"`。
+
+---
+
+## 四、九个坑（按踩到的顺序，每条都是"现象 → 原因 → 解法"）
+
+| # | 现象 | 原因 | 解法 |
+|---|---|---|---|
+| 1 | CMake 找不到 Ninja | PATH 里没有 ninja，toolchain 不会自动找 | 传 `-DCMAKE_MAKE_PROGRAM=<绝对路径>` |
+| 2 | `Cannot find source file: E:/engine/src/pak.c` | 相对路径层级算错（`android/app/jni` 上溯到根是 **三级**） | `${CMAKE_CURRENT_SOURCE_DIR}/../../../engine` |
+| 3 | 脚本报 `SAFE_DELETE_BULK_CONFIRM_REQUIRED` | Shutil `rmtree` 批量删文件被安全策略拦截 | 改 `copytree(..., dirs_exist_ok=True)` 增量覆盖；大目录（SDL2 源码）只复制一次 |
+| 4 | `AndroidManifest.xml: must have a 'package' attribute` | SDL2 模板把 package 留给 gradle 的 namespace | 构建时注入 `package="org.libsdl.app"` |
+| 5 | `android.jar: No such file or directory` | sdkmanager 装 platform 未完成（目录只有 `.installer`） | 从 `repository2-3.xml` 查真实 zip 名（如 `platform-34-ext7_r03.zip`）直下 |
+| 6 | javac 报"编码 GBK 的不可映射字符" | `SDLActivity.java` 含 emoji，javac 默认按平台编码读 | `javac -encoding utf-8` |
+| 7 | d8 报 `UnsupportedClassVersionError ... class file version 55.0` | d8 用的是系统 JDK 8（需 11+） | **子进程环境显式设 `JAVA_HOME`=JDK17**（并把其 bin 前置到 PATH） |
+| 8 | 启动即报 `couldn't find "libSDL2.so"` | APK 只打了 `libmain.so`；Java 会 `System.loadLibrary("SDL2")` | 把 `build/native/**/lib*.so` **全部**打进 `lib/<abi>/` |
+| 9 | 进程秒退（日志 `Finished main function`） | 资源放在公共 `/sdcard/`，Android 6+ 需**运行时存储权限**，读不到就 return | 改用**应用外部私有目录** `/sdcard/Android/data/<pkg>/files/`（无需权限，adb 可写） |
+
+### 另外两个非报错型坑
+
+- **通道错位（整屏偏色）**：SDL 的 **GLES 后端**在打包格式上通道顺序相对 SDL 定义是"反转"的。
+  - 现象：`RGBA8888` → alpha 落到 R（**整屏偏红**）；`BGRA8888` → alpha 落到 B（**整屏偏蓝**）。
+  - 解法：**Android 用 `SDL_PIXELFORMAT_ABGR8888`**（反转后正好得到内存序 R,G,B,A）；PC(D3D) 继续用 `RGBA8888`。
+- **`__android_log_print` 未定义**：需链接 `log`（`target_link_libraries(... log)`）。
+
+---
+
+## 五、常用命令
+
+```bash
+# 构建 + 安装到模拟器（含启动与截图）
+python tools/build_android.py            # 只构建
+python tools/build_android.py --install  # 构建并 adb install
+python tools/build_android.py --clean    # 清理 ASCII 工作区 E:/sango3-android
+
+# 资源推送（PAK 是版权文件，不入库；用 adb push）
+LD=F:/leidian/LDPlayer9/adb.exe
+D=/sdcard/Android/data/org.libsdl.app/files/Sango3
+$LD -s emulator-5554 shell mkdir -p $D/encoding
+$LD -s emulator-5554 push "<游戏目录>/Sango3.PAK" $D/
+$LD -s emulator-5554 push "<游戏目录>/Update.PAK" $D/
+$LD -s emulator-5554 push "engine/assets/encoding/." $D/encoding/
+
+# 启动 / 截图 / 日志
+$LD -s emulator-5554 shell am start -n org.libsdl.app/org.libsdl.app.SDLActivity
+$LD -s emulator-5554 exec-out screencap -p > shot.png
+$LD -s emulator-5554 logcat -d | grep -E "sango3|SDL|FATAL"
+```
+
+> 本机 adb 会同时看到 `emulator-5554` 与 `127.0.0.1:5555`（同一台雷电的两种连接），
+> 多设备时报 `more than one device/emulator` → **先 `adb disconnect 127.0.0.1:5555`** 或用 `-s` 指定。
+
+---
+
+## 六、查官方组件直链（sdkmanager 慢时的兜底）
+
+```python
+import urllib.request, re
+data = urllib.request.urlopen(
+    'https://dl.google.com/android/repository/repository2-3.xml', timeout=40
+).read().decode('utf-8', 'replace')
+i = data.find('path="platforms;android-34"')
+print(re.search(r'<url>([^<]+)</url>', data[i:i+4000]).group(1))
+```
+
+---
+
+## 七、已知限制 / 下一步
+
+- **无字体**：首版 APK 未含 SDL2_ttf（文本层跳过）。要显示文字需把 SDL2_ttf + FreeType 源码纳入 NDK 构建。
+- **竖屏锁**：manifest 里 `screenOrientation="landscape"`（SDL2 模板自带），实机为横屏显示。
+- **资源靠 adb push**：正式分发时应把 PAK 打进 APK assets 或做首次启动解包（版权与体积需权衡）。
+- **EXTEND 宽高比**（手机长屏真正利用宽度）尚未实现，当前是 pillarbox。

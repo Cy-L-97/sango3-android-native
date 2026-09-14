@@ -93,8 +93,17 @@ Sango3Presenter *sango3_presenter_new(int32_t logical_w, int32_t logical_h,
 
     /* 画布内存序为 R,G,B,A（字节序）→ SDL_PIXELFORMAT_RGBA8888。
      * 注意：不可用 SDL_PIXELFORMAT_RGBA32 —— 该别名在小端机上等于 ABGR8888，
-     * 会把我们的 R,G,B,A 当成 A,B,G,R，导致通道错位（旧 sango3view_sdl.c 的坑）。 */
-    p->tex = SDL_CreateTexture(p->ren, SDL_PIXELFORMAT_RGBA8888,
+     * 会把我们的 R,G,B,A 当成 A,B,G,R，导致通道错位（旧 sango3view_sdl.c 的坑）。
+     * ⚠ Android(GLES) 后端实测需 BGRA8888：用 RGBA8888 会 R/B 交换（整屏偏红）。 */
+#if defined(__ANDROID__)
+    /* Android(GLES) 实测：SDL 的 GL 后端在打包格式上通道顺序相对 SDL 定义是"反转"的。
+     * 现象：RGBA8888 → alpha 落到 R（整屏偏红）；BGRA8888 → alpha 落到 B（整屏偏蓝）。
+     * 因此指定 ABGR8888，反转后正好得到内存序 R,G,B,A。 */
+    Uint32 texfmt = SDL_PIXELFORMAT_ABGR8888;
+#else
+    Uint32 texfmt = SDL_PIXELFORMAT_RGBA8888;
+#endif
+    p->tex = SDL_CreateTexture(p->ren, texfmt,
                                SDL_TEXTUREACCESS_STATIC, (int)logical_w, (int)logical_h);
     if (!p->tex) {
         printf("FAIL : SDL_CreateTexture: %s\n", SDL_GetError());

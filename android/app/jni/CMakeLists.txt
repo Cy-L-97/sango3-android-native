@@ -14,8 +14,9 @@ project(sango3android C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-set(SDL2_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/SDL2-src")
-set(ENGINE  "${CMAKE_CURRENT_SOURCE_DIR}/../../../../engine")
+# CMakeLists 位于 <root>/android/app/jni → 上溯三级即 <root>
+set(SDL2_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/SDL2-src")
+set(ENGINE   "${CMAKE_CURRENT_SOURCE_DIR}/../../../engine")
 
 if(EXISTS "${SDL2_SRC}/CMakeLists.txt")
   add_subdirectory(${SDL2_SRC} ${CMAKE_BINARY_DIR}/sdl2)
@@ -37,4 +38,5 @@ add_library(main SHARED
 
 target_include_directories(main PRIVATE ${ENGINE}/src)
 target_compile_definitions(main PRIVATE SANGO3_ANDROID=1)
-target_link_libraries(main SDL2::SDL2 SDL2::SDL2main)
+# log：__android_log_print 在 liblog 中（Android NDK 提供）
+target_link_libraries(main SDL2::SDL2 SDL2::SDL2main log)
