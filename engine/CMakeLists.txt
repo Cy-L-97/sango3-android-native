@@ -129,7 +129,7 @@ if(SANGO3_HAVE_SDL)
   target_link_libraries(sango3menu PRIVATE sango3_present)
 
   # 游戏主程序雏形（M2-6 交互 + M2-7 场景切换）：需要 SDL 窗口与字体层
-  add_executable(sango3app src/sango3app.c)
+  add_executable(sango3app src/sango3app.c src/editor_scene.c)
   target_link_libraries(sango3app PRIVATE sango3_scene sango3_present)
   set_target_properties(sango3app PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")

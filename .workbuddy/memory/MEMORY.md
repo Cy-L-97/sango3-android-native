@@ -23,6 +23,9 @@ M4 遗留：EXTEND 宽高比（字体已于 09-15 用 FreeType 直连解决）�
   - 顺带修正旧 `sango3view_sdl.c` 的纹理格式 bug（误用 `ABGR8888`，应为 `RGBA8888`）
   - SDL_ttf 字体层已完成：`font.c/.h`（像素/高清双模式 + 回退链），中文自检通过
 - **M2**（UI 布局系统已完成；场景驱动进行中）UI 框架（读 `Menu.ini`，M2-1~M2-4 已完成）+ 场景驱动（地图 + 战场，待做）
+  - **M3-lite（2026-09-15）自定义武将创建已跑通**：`editor_scene.c/.h` 自绘表单
+    （姓名真文本输入/性别/头像/四维随机/保存 JSONL）；presenter 增文本轮询接口；
+    **登录武将=创建自创武将**（用户纠正，勿再当浏览列表）；开局注入待做。
   - **M2-1~M2-4 已完成**：`ini.c` 支持 `#include` 递归展开；`ui.c/.h` 解析 Menu.ini；
     `ui_probe.c` 验证器；`tools/build_ui.py` + `tools/verify_ui_c.py`
     **11530 项字段级 C↔Python 完全一致**

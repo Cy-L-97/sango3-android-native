@@ -25,6 +25,7 @@
 #include "menu_scene.h"
 #include "presenter.h"
 #include "font.h"
+#include "editor_scene.h"
 
 #include <SDL.h>
 #include <stdio.h>
@@ -121,13 +122,14 @@ static const uint32_t SC_MAIN[]   = { 1 };
 static const uint32_t SC_AGE[]    = { 100 };                 /* 選擇時期 */
 static const uint32_t SC_SAVE[]   = { 220, 201, 202, 203, 204, 205, 206, 207,
                                       208, 209, 210, 240, 230 };  /* 存檔：招牌+10 槽+自動+確定/取消 */
-/* 登錄武將（選擇新君主）：借主菜单背景（不带其按钮）+ 新君主/麾下武将 tab
- * + 武将列表框架 + 已登录武将标题。列表内容为运行时数据，后续里程碑绑定。
- * 注：root 400（新增/更改/删除面板）与 440/441 同位置，是 tab 选中后的互斥态，暂不叠。 */
+/* 登錄武將（創建自定義武將）：主菜單背景 + 新君主/麾下武將 tab
+ * + 武將列表框架 + 已登錄武將標題。列表內容為運行時數據。
+ * 注：root 400（新增/更改/刪除面板）與 440/441 同位置，是 tab 選中後的互斥態，暫不疊。 */
 static const uint32_t SC_LOGIN[]  = { S3_MENU_ROOT_ICON_ONLY | 1u,
                                       440u, 441u, 410u, 430u };
 static const uint32_t SC_OPTION[] = { 300, 301, 302, 303, 304, 305, 306, 307,
                                       308, 309 };            /* 設定選項 */
+static const uint32_t SC_EDITOR_BG[] = { S3_MENU_ROOT_ICON_ONLY | 1u };
 /* 战略 / 战术层：UI 面板组合。
  * 地图地形层待接 —— 需要 BlkData 逆向 + Shape\SF\Map\*.shp 等距瓦片拼接。 */
 static const uint32_t SC_STRATEGY[] = { 20000, 7000 };       /* Statusbar + MISSION CONTROL */
@@ -379,7 +381,72 @@ int main(int argc, char **argv) {
          app.n_roots, cw, ch, out_w, out_h, crx, cry, crw, crh);
 
     uint32_t drawn = 0;
+    /* 应用模式：0=菜单场景 1=创建武将表单（登录武将） */
+    int mode = 0;
+    S3Editor *ed = NULL;
+#ifdef SANGO3_ANDROID
+    const char *gen_path = "/sdcard/Android/data/org.libsdl.app/files/Sango3/custom_generals.jsonl";
+#else
+    const char *gen_path = "tmp/custom_generals.jsonl";
+#endif
     for (;;) {
+        if (mode == 1) {
+            /* ================= 创建武将表单 ================= */
+            if (!ed) ed = s3_editor_new(draw_text_cb, &fc, read_asset_cb, &ctx);
+            ms.roots = SC_EDITOR_BG;
+            ms.n_roots = NARR(SC_EDITOR_BG);
+            s3_menu_render(&ms, cv);          /* 背景（借主菜单背景图） */
+            s3_editor_render(ed, cv);
+            sango3_presenter_upload(p, cv->px);
+            if (sango3_presenter_frame(p, &drawn)) break;
+
+            char txt[32];
+            while (sango3_presenter_poll_text(p, txt)) s3_editor_on_text(ed, txt);
+            int32_t sym;
+            while (sango3_presenter_poll_key(p, &sym)) s3_editor_on_key(ed, sym);
+
+            S3Pointer pt;
+            sango3_presenter_pointer(p, &pt);
+            if (pt.rclick) {                  /* 返回键 = 取消 */
+                SDL_StopTextInput();
+                s3_editor_free(ed); ed = NULL;
+                mode = 0;
+            } else {
+                /* 点击：按下边沿记录位置，抬起且未移动才触发（防拖动误触） */
+                static int pressing = 0;
+                static int32_t px = -1, py = -1;
+                if (pt.lclick) {
+                    pressing = 1;
+                    px = (int32_t)pt.lx; py = (int32_t)pt.ly;
+                }
+                if (!pt.ldown && pressing) {
+                    pressing = 0;
+                    if ((int32_t)pt.lx == px && (int32_t)pt.ly == py)
+                        s3_editor_on_click(ed, px, py);
+                }
+                if (s3_editor_typing(ed)) SDL_StartTextInput();
+                else                          SDL_StopTextInput();
+
+                int r = s3_editor_result(ed);
+                if (r == 1) {
+                    if (s3_editor_save(ed, gen_path) == 0) {
+                        printf("general saved -> %s\n", gen_path);
+                        ALOG("general saved -> %s", gen_path);
+                    }
+                    SDL_StopTextInput();
+                    s3_editor_free(ed); ed = NULL;
+                    mode = 0;
+                } else if (r == 2) {
+                    SDL_StopTextInput();
+                    s3_editor_free(ed); ed = NULL;
+                    mode = 0;
+                }
+            }
+            SDL_Delay(16);
+            continue;
+        }
+
+        /* ================= 菜单场景 ================= */
         ms.roots = app.roots;
         ms.n_roots = app.n_roots;
         s3_menu_render(&ms, cv);
@@ -414,7 +481,13 @@ int main(int argc, char **argv) {
                 int32_t cmd = w ? w->command : -1;
                 if (cmd == 6) { printf("command=6 (quit)\n"); break; }
                 Scene next = scene_for_command(cmd);
-                if (next.n > 0) {
+                if (cmd == 3) {
+                    /* 登錄武將 → 创建自定义武将表单 */
+                    mode = 1;
+                    app.hover = app.press = 0;
+                    printf("editor mode (create general)\n");
+                    ALOG("editor mode (create general)");
+                } else if (next.n > 0) {
                     if (app.sp < 16) { app.stack[app.sp].roots = app.roots; app.stack[app.sp].n = app.n_roots; ++app.sp; }
                     app.roots = next.roots;
                     app.n_roots = next.n;

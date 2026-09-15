@@ -73,4 +73,9 @@ typedef struct {
 
 void sango3_presenter_pointer(const Sango3Presenter *p, S3Pointer *out);
 
+/* ---- 文本输入 / 按键轮询（frame() 期间收集，取走即出队）----
+ * 供表单类界面（如创建武将）使用；sym 为 SDL_Keycode 原值（int32）。 */
+int sango3_presenter_poll_text(Sango3Presenter *p, char out[32]);
+int sango3_presenter_poll_key(Sango3Presenter *p, int32_t *sym);
+
 #endif /* SANGO3_PRESENTER_H */

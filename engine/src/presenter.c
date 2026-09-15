@@ -27,6 +27,11 @@ struct Sango3Presenter {
     int           ptr_inside;
     int           ptr_ldown, ptr_rdown;
     int           ptr_lclick, ptr_rclick;
+    /* 文本输入 / 按键队列（供表单类界面轮询；frame() 收集，poll 取走） */
+    char          text_q[8][32];
+    int           text_n;
+    int32_t       key_q[16];
+    int           key_n;
 };
 
 /* 按当前窗口尺寸重算内容矩形。
@@ -214,6 +219,8 @@ int sango3_presenter_frame(Sango3Presenter *p, uint32_t *out_drawn) {
     int quit = 0;
     p->ptr_lclick = 0;   /* 按下边沿每帧清零 */
     p->ptr_rclick = 0;
+    p->text_n = 0;
+    p->key_n = 0;
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) quit = 1;
@@ -222,6 +229,12 @@ int sango3_presenter_frame(Sango3Presenter *p, uint32_t *out_drawn) {
             /* Android 返回键：当作"右键返回"的按下边沿交给应用（不退出）。
              * 系统默认行为（Back 退出 Activity）已由 SDL_HINT_ANDROID_TRAP_BACK_BUTTON 拦截。 */
             p->ptr_rclick = 1;
+        }
+        else if (e.type == SDL_KEYDOWN) {
+            if (p->key_n < 16) p->key_q[p->key_n++] = (int32_t)e.key.keysym.sym;
+        }
+        else if (e.type == SDL_TEXTINPUT) {
+            if (p->text_n < 8) snprintf(p->text_q[p->text_n++], 32, "%s", e.text.text);
         }
         else if (e.type == SDL_WINDOWEVENT &&
                  e.window.event == SDL_WINDOWEVENT_RESIZED) {
@@ -262,9 +275,26 @@ int sango3_presenter_frame(Sango3Presenter *p, uint32_t *out_drawn) {
     return 0;
 }
 
+/* ---- 文本输入 / 按键轮询（frame() 收集，表单类界面取用；取走即出队） ---- */
+int sango3_presenter_poll_text(Sango3Presenter *p, char out[32]) {
+    if (!p || p->text_n <= 0) return 0;
+    memcpy(out, p->text_q[0], 32);
+    for (int i = 1; i < p->text_n; ++i)
+        memcpy(p->text_q[i - 1], p->text_q[i], 32);
+    --p->text_n;
+    return 1;
+}
+
+int sango3_presenter_poll_key(Sango3Presenter *p, int32_t *sym) {
+    if (!p || p->key_n <= 0) return 0;
+    if (sym) *sym = p->key_q[0];
+    for (int i = 1; i < p->key_n; ++i) p->key_q[i - 1] = p->key_q[i];
+    --p->key_n;
+    return 1;
+}
+
 void sango3_presenter_content_rect(const Sango3Presenter *p,
-                                  int32_t *x, int32_t *y, int32_t *w, int32_t *h) {
-    if (!p) return;
+                                  int32_t *x, int32_t *y, int32_t *w, int32_t *h) {    if (!p) return;
     if (x) *x = p->vp.dst_x;
     if (y) *y = p->vp.dst_y;
     if (w) *w = p->vp.dst_w;
