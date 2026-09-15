@@ -108,21 +108,26 @@ void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
     s->cv_w = cv->w; s->cv_h = cv->h;
     sango3_canvas_fill(cv, 0, 0, cv->w, cv->h, 10, 12, 20);
 
-    /* 地图整图：最近邻缩放到画布 */
+    /* 地图整图：画布与素材同尺寸时 1:1 直拷（零重采样，最清晰）；否则最近邻缩放。
+     * 调用方（app）在战略层会把画布切成地图原生分辨率 —— 这是清晰度的关键。 */
     if (s->map_ok) {
         int32_t mw = s->map.width, mh = s->map.height;
         const uint8_t *src = s->map.rgba;
-        for (int32_t y = 0; y < cv->h; ++y) {
-            int32_t sy = (int32_t)((int64_t)y * mh / cv->h);
-            if (sy < 0 || sy >= mh) continue;
-            const uint8_t *srow = src + (size_t)sy * mw * 4;
-            uint8_t *drow = cv->px + (size_t)y * cv->w * 4;
-            for (int32_t x = 0; x < cv->w; ++x) {
-                int32_t sx = (int32_t)((int64_t)x * mw / cv->w);
-                if (sx < 0 || sx >= mw) continue;
-                const uint8_t *sp = srow + (size_t)sx * 4;
-                uint8_t *dp = drow + (size_t)x * 4;
-                dp[0] = sp[0]; dp[1] = sp[1]; dp[2] = sp[2]; dp[3] = sp[3];
+        if (mw == cv->w && mh == cv->h) {
+            memcpy(cv->px, src, (size_t)mw * mh * 4);
+        } else {
+            for (int32_t y = 0; y < cv->h; ++y) {
+                int32_t sy = (int32_t)((int64_t)y * mh / cv->h);
+                if (sy < 0 || sy >= mh) continue;
+                const uint8_t *srow = src + (size_t)sy * mw * 4;
+                uint8_t *drow = cv->px + (size_t)y * cv->w * 4;
+                for (int32_t x = 0; x < cv->w; ++x) {
+                    int32_t sx = (int32_t)((int64_t)x * mw / cv->w);
+                    if (sx < 0 || sx >= mw) continue;
+                    const uint8_t *sp = srow + (size_t)sx * 4;
+                    uint8_t *dp = drow + (size_t)x * 4;
+                    dp[0] = sp[0]; dp[1] = sp[1]; dp[2] = sp[2]; dp[3] = sp[3];
+                }
             }
         }
     }
@@ -150,9 +155,11 @@ void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
         }
     }
 
-    /* 顶部信息条（下移 10px 避开手机状态栏） */
-    sango3_canvas_fill(cv, 0, 10, cv->w, 26, 12, 14, 24);
-    sango3_canvas_frame(cv, 0, 35, cv->w, 1, 1, 150, 130, 80);
+    /* 顶部信息条（下移 10px 避开手机状态栏）。
+     * 高分辨率画布（1024×768）下用大字档 font=3，否则相对屏幕偏小。 */
+    const int32_t bar_y = 10, bar_h = 44;
+    sango3_canvas_fill(cv, 0, bar_y, cv->w, bar_h, 12, 14, 24);
+    sango3_canvas_frame(cv, 0, bar_y + bar_h, cv->w, 2, 1, 150, 130, 80);
     if (s->draw_text) {
         char buf[96];
         if (s->sel >= 0 && s->sel < s->n_cities)
@@ -161,7 +168,7 @@ void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
         else
             snprintf(buf, sizeof buf, "战略层：点击城市查看（%d 城，我方 %d）",
                      s->n_cities, mine_count(s));
-        s->draw_text(s->text_ud, cv, buf, 8, 10, cv->w - 16, 26, 0xF0DCA0, 1, 0x4u);
+        s->draw_text(s->text_ud, cv, buf, 14, bar_y, cv->w - 28, bar_h, 0xF0DCA0, 3, 0x4u);
     }
 }
 

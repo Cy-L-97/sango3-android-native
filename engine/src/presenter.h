@@ -63,6 +63,14 @@ float sango3_presenter_scale(const Sango3Presenter *p);
 /* 运行时切换宽高比策略并立即重算内容矩形（菜单 EXTEND ↔ 地图 COVER）。 */
 void sango3_presenter_set_aspect(Sango3Presenter *p, Sango3Aspect aspect);
 
+/* 运行时切换逻辑画布尺寸（重建纹理）。
+ * 地图类场景用它把逻辑尺寸切成素材原生分辨率，避免"先降采样再放大"导致发糊。
+ * 返回 0 成功。 */
+int  sango3_presenter_set_logical_size(Sango3Presenter *p, int32_t w, int32_t h);
+
+/* 运行时切换放大滤镜：像素风素材用 NEAREST；照片级/渐变大图用 LINEAR 更自然。 */
+void sango3_presenter_set_filter(Sango3Presenter *p, Sango3Filter filter);
+
 /* 指针状态（每次 frame() 后更新，坐标已反算到**逻辑空间**）。
  * lclick/rclick 是"按下边沿"，每帧自动清零 —— 交互判定用边沿而非电平。 */
 typedef struct {

@@ -303,6 +303,41 @@ void sango3_presenter_set_aspect(Sango3Presenter *p, Sango3Aspect aspect) {
     recompute_rect(p);
 }
 
+/* 运行时切换逻辑画布尺寸（重建纹理）。
+ * 用途：战略地图素材是 1024×768，若强行塞进 640×480 逻辑画布会先降采样再放大，
+ * 细节全丢（用户实测"很糊"）→ 地图场景把逻辑尺寸切成素材原生分辨率，1:1 上屏。 */
+int sango3_presenter_set_logical_size(Sango3Presenter *p, int32_t w, int32_t h) {
+    if (!p || !p->valid || w <= 0 || h <= 0) return -1;
+    if (p->logical_w == w && p->logical_h == h) return 0;
+#if defined(__ANDROID__)
+    Uint32 texfmt = SDL_PIXELFORMAT_ABGR8888;
+#else
+    Uint32 texfmt = SDL_PIXELFORMAT_RGBA8888;
+#endif
+    SDL_Texture *nt = SDL_CreateTexture(p->ren, texfmt,
+                                        SDL_TEXTUREACCESS_STATIC, (int)w, (int)h);
+    if (!nt) return -2;
+    SDL_ScaleMode sm = (p->filter == SANGO3_FILTER_NEAREST)
+                       ? SDL_ScaleModeNearest : SDL_ScaleModeLinear;
+    SDL_SetTextureScaleMode(nt, sm);
+    SDL_DestroyTexture(p->tex);
+    p->tex = nt;
+    p->logical_w = w;
+    p->logical_h = h;
+    recompute_rect(p);
+    return 0;
+}
+
+/* 运行时切换放大滤镜（菜单像素风用 NEAREST；照片级地图用 LINEAR 更自然）。 */
+void sango3_presenter_set_filter(Sango3Presenter *p, Sango3Filter filter) {
+    if (!p || !p->valid || p->filter == filter) return;
+    p->filter = filter;
+    SDL_ScaleMode sm = (filter == SANGO3_FILTER_NEAREST)
+                       ? SDL_ScaleModeNearest : SDL_ScaleModeLinear;
+    SDL_SetTextureScaleMode(p->tex, sm);
+    recompute_rect(p);
+}
+
 /* ---- 文本输入 / 按键轮询（frame() 收集，表单类界面取用；取走即出队） ---- */
 int sango3_presenter_poll_text(Sango3Presenter *p, char out[32]) {
     if (!p || p->text_n <= 0) return 0;

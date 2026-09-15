@@ -94,10 +94,17 @@ static int include_cb(const char *name, unsigned char **out_data, size_t *out_n,
 }
 
 /* ---------------------------------------------------------------- 文本层 */
-typedef struct { S3Font *hd[3]; int ready; } FontCtx;
+/* 字号档：0/1/2 = 常规三档（逻辑 14/16/20px）；3 = 大字（32px），
+ * 供高分辨率画布（战略地图 1024×768）使用，否则文字相对屏幕会偏小。 */
+typedef struct { S3Font *hd[4]; int ready; } FontCtx;
 
 static int font_size_of(int font) {
-    switch (font) { case 0: return 14; case 2: return 20; default: return 16; }
+    switch (font) {
+        case 0: return 14;
+        case 2: return 20;
+        case 3: return 32;
+        default: return 16;
+    }
 }
 
 static void draw_text_cb(void *ud, Sango3Canvas *cv, const char *utf8,
@@ -105,7 +112,7 @@ static void draw_text_cb(void *ud, Sango3Canvas *cv, const char *utf8,
                          uint32_t rgb, int font, uint32_t style) {
     FontCtx *fc = (FontCtx *)ud;
     if (!fc || !fc->ready) return;
-    int idx = (font >= 0 && font <= 2) ? font : 1;
+    int idx = (font >= 0 && font <= 3) ? font : 1;
     S3Font *f = fc->hd[idx] ? fc->hd[idx] : fc->hd[1];
     if (!f) return;
     uint8_t *px = NULL; int tw = 0, th = 0;
@@ -485,6 +492,10 @@ int main(int argc, char **argv) {
 
     Sango3Canvas *cv = sango3_canvas_new(cw, ch, 0, 0, 0);
     if (!cv) { fprintf(stderr, "canvas alloc failed\n"); s3_ui_free(&L); s3_ini_free(ini); for (int k = 0; k < ctx.n_ar; ++k) pak_close(&ctx.ar[k]); return 1; }
+    /* 战略地图专用画布：与地图素材同分辨率（1024×768），1:1 上屏零重采样。
+     * 若塞进 640×480 逻辑画布，会"先降采样再放大"，画面发糊（用户实测）。 */
+    Sango3Canvas *cv_map = sango3_canvas_new(1024, 768, 0, 0, 0);
+    if (!cv_map) { fprintf(stderr, "map canvas alloc failed\n"); sango3_canvas_free(cv); s3_ui_free(&L); s3_ini_free(ini); for (int k = 0; k < ctx.n_ar; ++k) pak_close(&ctx.ar[k]); return 1; }
 
     Sango3Presenter *p = sango3_presenter_new(cw, ch, out_w, out_h, 1, aspect, filter, "Sango3 Native");
     if (!sango3_presenter_valid(p)) {
@@ -497,7 +508,7 @@ int main(int argc, char **argv) {
     FontCtx fc;
     memset(&fc, 0, sizeof fc);
     if (s3_font_init(fonts_dir) == 0 && s3_font_ready())
-        for (int k = 0; k < 3; ++k) fc.hd[k] = s3_font_open(S3_FONT_HD, font_size_of(k), S3_LANG_HANS);
+        for (int k = 0; k < 4; ++k) fc.hd[k] = s3_font_open(S3_FONT_HD, font_size_of(k), S3_LANG_HANS);
     fc.ready = (fc.hd[0] || fc.hd[1] || fc.hd[2]);
 
     App app;
@@ -647,20 +658,25 @@ int main(int argc, char **argv) {
                 load_cities(st, &ctx, sid,
                             si >= 0 ? s3_kingdom_lord_name(kd, si) : NULL, NULL);
             }
-            /* 地图是"内容本身" → 用 COVER（铺满裁切）而非 EXTEND 条带 */
+            /* 地图是"内容本身" → COVER（铺满裁切）+ 原生分辨率 + 平滑滤镜 */
+            sango3_presenter_set_logical_size(p, cv_map->w, cv_map->h);
             sango3_presenter_set_aspect(p, SANGO3_ASPECT_COVER);
+            sango3_presenter_set_filter(p, SANGO3_FILTER_BILINEAR);
             mode = 4;
         }
         if (mode == 4) {
             /* ================= 战略层：地图 + 城市 ================= */
-            s3_strategy_render(st, cv);
-            sango3_presenter_upload(p, cv->px);
+            s3_strategy_render(st, cv_map);
+            sango3_presenter_upload(p, cv_map->px);
             if (sango3_presenter_frame(p, &drawn)) break;
 
             S3Pointer pt;
             sango3_presenter_pointer(p, &pt);
             if (pt.rclick) {
-                sango3_presenter_set_aspect(p, SANGO3_ASPECT_EXTEND);  /* 菜单恢复条带延展 */
+                /* 回菜单：恢复 640×480 逻辑画布 + EXTEND 条带 + 像素滤镜 */
+                sango3_presenter_set_filter(p, SANGO3_FILTER_NEAREST);
+                sango3_presenter_set_aspect(p, SANGO3_ASPECT_EXTEND);
+                sango3_presenter_set_logical_size(p, cw, ch);
                 mode = 0; app.hover = app.press = 0;
             } else {
                 static int spressing = 0;
@@ -760,10 +776,11 @@ int main(int argc, char **argv) {
     if (ed) s3_editor_free(ed);
     if (kd) s3_kingdom_free(kd);
     if (st) s3_strategy_free(st);
-    for (int k = 0; k < 3; ++k) if (fc.hd[k]) s3_font_close(fc.hd[k]);
+    for (int k = 0; k < 4; ++k) if (fc.hd[k]) s3_font_close(fc.hd[k]);
     s3_font_quit();
     sango3_presenter_free(p);
     sango3_canvas_free(cv);
+    sango3_canvas_free(cv_map);
     s3_ui_free(&L);
     s3_ini_free(ini);
     for (int k = 0; k < ctx.n_ar; ++k) pak_close(&ctx.ar[k]);
