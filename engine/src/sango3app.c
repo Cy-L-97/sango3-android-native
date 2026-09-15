@@ -26,6 +26,7 @@
 #include "presenter.h"
 #include "font.h"
 #include "editor_scene.h"
+#include "kingdom_scene.h"
 
 #include <SDL.h>
 #include <stdio.h>
@@ -166,6 +167,82 @@ static int state_of_cb(void *ud, uint32_t id) {
     App *a = (App *)ud;
     if (a->press && id == a->press) return 2;   /* down */
     if (a->hover && id == a->hover) return 1;   /* focus */
+    return 0;
+}
+
+/* ------------------------------------------------------- 开局流程（M3-lite）
+ * 主菜单「開始遊戲」(cmd=1) → 選擇時期 (root 100) → 剧本按钮 cmd=11..17
+ *   → 解析 Setting\City0N.ini 得到该剧本的君主与其城池/人口/金钱
+ *   → 選擇君主（自绘列表，含自定义武将）→ 決定 → 写 start_state.json
+ * 剧本名用简体硬编码（简中优先，不依赖 Big5 原文）。 */
+static const char *SCENARIO_NAMES[8] = {
+    "", "黄巾之乱", "讨伐董卓", "群雄割据", "官渡之战",
+    "卧龙出渊", "三国鼎立", "天下归魏"
+};
+
+/* 载入某剧本（id 1..7）的君主：City0N.ini 的每个 [ITEM] 是一座城 */
+static int load_scenario(S3Kingdom *k, int id, PakCtx *c) {
+    char path[64];
+    snprintf(path, sizeof path, "Setting\\City%02d.ini", id);
+    uint32_t len = 0;
+    uint8_t *data = pak_get(c, path, &len);
+    if (!data) return -1;
+    S3Ini *ini = s3_ini_parse_inc(data, len, include_cb, c);
+    free(data);
+    if (!ini) return -2;
+    int n = 0;
+    for (int i = 0; ; ++i) {
+        const S3IniSection *sec = s3_ini_section_at(ini, "ITEM", i);
+        if (!sec) break;
+        const char *lord = s3_ini_str(sec, "Lord", NULL);
+        if (!lord || !*lord) continue;
+        s3_kingdom_add_lord(k, lord, 1,
+                            s3_ini_int(sec, "People", 0),
+                            s3_ini_int(sec, "Money", 0), 0);
+        ++n;
+    }
+    s3_ini_free(ini);
+    return n;
+}
+
+/* 自定义武将（JSONL 每行一个）也作为可选君主（★ 标记） */
+static int load_custom_generals(S3Kingdom *k, const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    char line[512];
+    int n = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *p = strstr(line, "\"name\":\"");
+        if (!p) continue;
+        p += 8;
+        char *e = strchr(p, '"');
+        if (!e) continue;
+        *e = '\0';
+        if (*p) { s3_kingdom_add_lord(k, p, 0, 0, 0, 1); ++n; }
+    }
+    fclose(f);
+    return n;
+}
+
+static int save_start_state(const char *path, S3Kingdom *k) {
+    int idx = s3_kingdom_selected(k);
+    if (idx < 0) return -1;
+    FILE *f = fopen(path, "wb");
+    if (!f) return -2;
+    int sc = s3_kingdom_scenario(k);
+    fprintf(f, "{\"scenario\":%d,\"scenario_name\":\"%s\",",
+            sc, (sc >= 1 && sc <= 7) ? SCENARIO_NAMES[sc] : "");
+    fprintf(f, "\"lord\":\"%s\",\"cities\":%d,\"people\":%d,\"money\":%d,\"custom_generals\":[",
+            s3_kingdom_lord_name(k, idx), s3_kingdom_lord_cities(k, idx),
+            s3_kingdom_lord_people(k, idx), s3_kingdom_lord_money(k, idx));
+    int first = 1;
+    for (int i = 0; i < s3_kingdom_count(k); ++i) {
+        if (!s3_kingdom_lord_custom(k, i)) continue;
+        fprintf(f, "%s\"%s\"", first ? "" : ",", s3_kingdom_lord_name(k, i));
+        first = 0;
+    }
+    fprintf(f, "]}\n");
+    fclose(f);
     return 0;
 }
 
@@ -381,13 +458,17 @@ int main(int argc, char **argv) {
          app.n_roots, cw, ch, out_w, out_h, crx, cry, crw, crh);
 
     uint32_t drawn = 0;
-    /* 应用模式：0=菜单场景 1=创建武将表单（登录武将） */
+    /* 应用模式：0=菜单场景 1=创建武将表单 2=选择君主 3=开局占位 */
     int mode = 0;
     S3Editor *ed = NULL;
+    S3Kingdom *kd = NULL;
+    char start_msg[256] = "";
 #ifdef SANGO3_ANDROID
     const char *gen_path = "/sdcard/Android/data/org.libsdl.app/files/Sango3/custom_generals.jsonl";
+    const char *start_path = "/sdcard/Android/data/org.libsdl.app/files/Sango3/start_state.json";
 #else
     const char *gen_path = "tmp/custom_generals.jsonl";
+    const char *start_path = "tmp/start_state.json";
 #endif
     for (;;) {
         if (mode == 1) {
@@ -446,6 +527,68 @@ int main(int argc, char **argv) {
             continue;
         }
 
+        if (mode == 2) {
+            /* ================= 选择君主 ================= */
+            if (!kd) kd = s3_kingdom_new(draw_text_cb, &fc);
+            ms.roots = SC_EDITOR_BG;
+            ms.n_roots = NARR(SC_EDITOR_BG);
+            s3_menu_render(&ms, cv);
+            s3_kingdom_render(kd, cv);
+            sango3_presenter_upload(p, cv->px);
+            if (sango3_presenter_frame(p, &drawn)) break;
+
+            S3Pointer pt;
+            sango3_presenter_pointer(p, &pt);
+            if (pt.rclick) { mode = 0; app.hover = app.press = 0; }
+            else {
+                static int kpressing = 0;
+                static int32_t kx = -1, ky = -1;
+                if (pt.lclick) { kpressing = 1; kx = (int32_t)pt.lx; ky = (int32_t)pt.ly; }
+                if (!pt.ldown && kpressing) {
+                    kpressing = 0;
+                    if ((int32_t)pt.lx == kx && (int32_t)pt.ly == ky)
+                        s3_kingdom_on_click(kd, kx, ky);
+                }
+                int r = s3_kingdom_result(kd);
+                if (r == 1) {
+                    int sc = s3_kingdom_scenario(kd);
+                    int si = s3_kingdom_selected(kd);
+                    snprintf(start_msg, sizeof start_msg, "%s · 君主 %s（%d 城）",
+                             (sc >= 1 && sc <= 7) ? SCENARIO_NAMES[sc] : "",
+                             s3_kingdom_lord_name(kd, si),
+                             s3_kingdom_lord_cities(kd, si));
+                    if (save_start_state(start_path, kd) == 0) {
+                        printf("start state saved: %s -> %s\n", start_msg, start_path);
+                        ALOG("start saved: %s -> %s", start_msg, start_path);
+                    }
+                    mode = 3;
+                } else if (r == 2) {
+                    mode = 0; app.hover = app.press = 0;
+                }
+            }
+            SDL_Delay(16);
+            continue;
+        }
+        if (mode == 3) {
+            /* ================= 开局占位（战略层待接） ================= */
+            ms.roots = SC_EDITOR_BG;
+            ms.n_roots = NARR(SC_EDITOR_BG);
+            s3_menu_render(&ms, cv);
+            sango3_canvas_fill(cv, 40, 170, 560, 160, 16, 14, 26);
+            sango3_canvas_frame(cv, 40, 170, 560, 160, 2, 168, 140, 76);
+            draw_text_cb(&fc, cv, start_msg, 50, 200, 540, 40, 0xF2E0B0, 2, 0x8u | 0x4u);
+            draw_text_cb(&fc, cv, "战略层（地图）尚未接入 —— 点击或返回键回主菜单",
+                         50, 260, 540, 30, 0xC8C8C8, 1, 0x8u | 0x4u);
+            sango3_presenter_upload(p, cv->px);
+            if (sango3_presenter_frame(p, &drawn)) break;
+
+            S3Pointer pt;
+            sango3_presenter_pointer(p, &pt);
+            if (pt.rclick || pt.lclick) { mode = 0; app.hover = app.press = 0; }
+            SDL_Delay(16);
+            continue;
+        }
+
         /* ================= 菜单场景 ================= */
         ms.roots = app.roots;
         ms.n_roots = app.n_roots;
@@ -487,6 +630,18 @@ int main(int argc, char **argv) {
                     app.hover = app.press = 0;
                     printf("editor mode (create general)\n");
                     ALOG("editor mode (create general)");
+                } else if (cmd >= 11 && cmd <= 17) {
+                    /* 選擇時期的剧本按钮 → 载入该剧本的君主列表 */
+                    int sid = cmd - 10;                 /* 11..17 → 剧本 1..7 */
+                    if (!kd) kd = s3_kingdom_new(draw_text_cb, &fc);
+                    s3_kingdom_begin(kd, sid, SCENARIO_NAMES[sid]);
+                    int nl = load_scenario(kd, sid, &ctx);
+                    int nc = load_custom_generals(kd, gen_path);
+                    printf("scenario %d (%s): %d lords (+%d custom)\n",
+                           sid, SCENARIO_NAMES[sid], nl, nc);
+                    ALOG("scenario %d (%s): %d lords (+%d custom)",
+                         sid, SCENARIO_NAMES[sid], nl, nc);
+                    if (nl > 0 || nc > 0) { mode = 2; app.hover = app.press = 0; }
                 } else if (next.n > 0) {
                     if (app.sp < 16) { app.stack[app.sp].roots = app.roots; app.stack[app.sp].n = app.n_roots; ++app.sp; }
                     app.roots = next.roots;
@@ -515,6 +670,8 @@ int main(int argc, char **argv) {
     }
 
     s3_menu_scene_release(&ms);
+    if (ed) s3_editor_free(ed);
+    if (kd) s3_kingdom_free(kd);
     for (int k = 0; k < 3; ++k) if (fc.hd[k]) s3_font_close(fc.hd[k]);
     s3_font_quit();
     sango3_presenter_free(p);

@@ -26,6 +26,11 @@ M4 遗留：EXTEND 宽高比（字体已于 09-15 用 FreeType 直连解决）�
   - **M3-lite（2026-09-15）自定义武将创建已跑通**：`editor_scene.c/.h` 自绘表单
     （姓名真文本输入/性别/头像/四维随机/保存 JSONL）；presenter 增文本轮询接口；
     **登录武将=创建自创武将**（用户纠正，勿再当浏览列表）；开局注入待做。
+  - **M3-lite 开局流程第一步已跑通（2026-09-15）**：選擇時期 → 選擇君主 → 開局。
+    **剧本→君主数据在 `Setting\City01~07.ini`**（城池的 Lord 字段），
+    势力定义在 `Setting\Nation.ini`（旗号/外交，战略层要用）；
+    剧本按钮 cmd=11..17。`kingdom_scene.c/.h` 自绘君主表；
+    开局状态写 `start_state.json`。战略层（地图）待接。
   - **M2-1~M2-4 已完成**：`ini.c` 支持 `#include` 递归展开；`ui.c/.h` 解析 Menu.ini；
     `ui_probe.c` 验证器；`tools/build_ui.py` + `tools/verify_ui_c.py`
     **11530 项字段级 C↔Python 完全一致**

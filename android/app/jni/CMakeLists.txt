@@ -53,6 +53,7 @@ add_library(main SHARED
   ${ENGINE}/src/presenter.c
   ${ENGINE}/src/font.c
   ${ENGINE}/src/editor_scene.c
+  ${ENGINE}/src/kingdom_scene.c
   ${ENGINE}/src/sango3app.c)
 
 target_include_directories(main PRIVATE ${ENGINE}/src ${FT_SRC}/include)
