@@ -1,52 +1,42 @@
 /*
  * font.c —— TTF 字体渲染层（M1-b 字体显示）
  *
+ * 有两个可选后端（编译期二选一，对外接口完全一致）：
+ *   SANGO3_HAVE_TTF      —— SDL2_ttf（PC 端默认，third_party/SDL2_ttf 预编译）
+ *   SANGO3_HAVE_FREETYPE —— FreeType 直连（Android 端；只依赖 freetype 一个纯 C 库，
+ *                           不引入 SDL2_ttf 的 harfbuzz / plutosvg 依赖链）
+ * 两者都未定义时提供安全降级（不渲染文本）。
+ *
  * 表/字体文件由 tools/setup_sdl_ttf.py 与 engine/assets/fonts 提供，运行时零平台依赖。
  */
 #include "font.h"
-
-#ifdef SANGO3_HAVE_TTF
-#include <SDL.h>
-#include <SDL_ttf.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(SANGO3_HAVE_TTF) || defined(SANGO3_HAVE_FREETYPE)
+
 static char g_fonts_dir[2048];
-static int  g_init = 0;
 
-int s3_font_ready(void) { return g_init; }
-
-int s3_font_init(const char *fonts_dir) {
-    if (g_init) return 0;
-    if (TTF_Init() != 0) {
-        fprintf(stderr, "TTF_Init failed: %s\n", TTF_GetError());
-        return -1;
-    }
-    if (fonts_dir) {
-        size_t n = strlen(fonts_dir);
-        if (n >= sizeof g_fonts_dir) n = sizeof g_fonts_dir - 1;
-        memcpy(g_fonts_dir, fonts_dir, n);
-        g_fonts_dir[n] = '\0';
-    } else {
-        g_fonts_dir[0] = '\0';
-    }
-    g_init = 1;
-    return 0;
-}
-
-void s3_font_quit(void) {
-    if (g_init) { TTF_Quit(); g_init = 0; }
-}
-
+#ifdef SANGO3_HAVE_TTF
+#include <SDL.h>
+#include <SDL_ttf.h>
+/* 用 SDL 的 UTF-8 安全文件 API（Windows 下内部转宽字符），
+ * 否则 ANSI fopen 认不了含中文的 UTF-8 路径。 */
 static int file_readable(const char *p) {
-    /* 用 SDL 的 UTF-8 安全文件 API（Windows 下内部转宽字符），
-     * 否则 ANSI fopen 认不了含中文的 UTF-8 路径。 */
     SDL_RWops *rw = SDL_RWFromFile(p, "rb");
     if (!rw) return 0;
     SDL_RWclose(rw);
     return 1;
 }
+#else
+static int file_readable(const char *p) {
+    FILE *f = fopen(p, "rb");
+    if (!f) return 0;
+    fclose(f);
+    return 1;
+}
+#endif
 
 /* 回退链：项目字体（按模式/语言选文件）→ 系统字体（Windows）→ NULL。
  * buf 为静态缓冲，调用方需立即使用（不跨调用持有）。 */
@@ -77,6 +67,37 @@ static const char *pick_font_path(S3FontMode mode, S3Lang lang) {
         if (file_readable(sys[i])) return sys[i];
     }
     return NULL;
+}
+
+#endif /* HAVE_TTF || HAVE_FREETYPE */
+
+/* ============================ 后端 A：SDL2_ttf ============================ */
+#ifdef SANGO3_HAVE_TTF
+
+static int  g_init = 0;
+
+int s3_font_ready(void) { return g_init; }
+
+int s3_font_init(const char *fonts_dir) {
+    if (g_init) return 0;
+    if (TTF_Init() != 0) {
+        fprintf(stderr, "TTF_Init failed: %s\n", TTF_GetError());
+        return -1;
+    }
+    if (fonts_dir) {
+        size_t n = strlen(fonts_dir);
+        if (n >= sizeof g_fonts_dir) n = sizeof g_fonts_dir - 1;
+        memcpy(g_fonts_dir, fonts_dir, n);
+        g_fonts_dir[n] = '\0';
+    } else {
+        g_fonts_dir[0] = '\0';
+    }
+    g_init = 1;
+    return 0;
+}
+
+void s3_font_quit(void) {
+    if (g_init) { TTF_Quit(); g_init = 0; }
 }
 
 struct S3Font { TTF_Font *font; };
@@ -144,7 +165,159 @@ int s3_font_render_utf8(const S3Font *f, const char *utf8,
     return 0;
 }
 
-#else /* !SANGO3_HAVE_TTF —— 无 TTF 子系统时提供安全降级（调用方不会渲染文本） */
+/* ========================== 后端 B：FreeType 直连 ========================== */
+#elif defined(SANGO3_HAVE_FREETYPE)
+
+#include <ft2build.h>
+#include FT_FREETYPE_H
+
+static FT_Library g_ft   = NULL;
+static int        g_init = 0;
+
+int s3_font_ready(void) { return g_init; }
+
+int s3_font_init(const char *fonts_dir) {
+    if (g_init) return 0;
+    if (FT_Init_FreeType(&g_ft) != 0) {
+        fprintf(stderr, "FT_Init_FreeType failed\n");
+        g_ft = NULL;
+        return -1;
+    }
+    if (fonts_dir) {
+        size_t n = strlen(fonts_dir);
+        if (n >= sizeof g_fonts_dir) n = sizeof g_fonts_dir - 1;
+        memcpy(g_fonts_dir, fonts_dir, n);
+        g_fonts_dir[n] = '\0';
+    } else {
+        g_fonts_dir[0] = '\0';
+    }
+    g_init = 1;
+    return 0;
+}
+
+void s3_font_quit(void) {
+    if (g_init) { FT_Done_FreeType(g_ft); g_ft = NULL; g_init = 0; }
+}
+
+/* 解码一个 UTF-8 码点并前移游标；非法序列返回 U+FFFD（不静默：仍会画成豆腐块）。 */
+static uint32_t utf8_next(const char **pp) {
+    const unsigned char *s = (const unsigned char *)*pp;
+    uint32_t c = *s++;
+    if (c < 0x80) { *pp = (const char *)s; return c; }
+    int extra;
+    if      ((c & 0xE0) == 0xC0) { c &= 0x1Fu; extra = 1; }
+    else if ((c & 0xF0) == 0xE0) { c &= 0x0Fu; extra = 2; }
+    else if ((c & 0xF8) == 0xF0) { c &= 0x07u; extra = 3; }
+    else { *pp = (const char *)s; return 0xFFFDu; }
+    for (int i = 0; i < extra; ++i) {
+        if ((*s & 0xC0) != 0x80) { *pp = (const char *)s; return 0xFFFDu; }
+        c = (c << 6) | (uint32_t)(*s++ & 0x3Fu);
+    }
+    *pp = (const char *)s;
+    return c;
+}
+
+struct S3Font {
+    FT_Face face;
+    int     pixel;   /* 1 = 像素模式（关 hinting 保锐利） */
+};
+
+S3Font *s3_font_open(S3FontMode mode, int size_px, S3Lang lang) {
+    if (!g_init) return NULL;
+    if (size_px <= 0) size_px = 16;
+    const char *path = pick_font_path(mode, lang);
+    if (!path) return NULL;
+    FT_Face face = NULL;
+    if (FT_New_Face(g_ft, path, 0, &face) != 0 || !face) return NULL;
+    if (FT_Set_Pixel_Sizes(face, 0, (FT_UInt)size_px) != 0) {
+        FT_Done_Face(face);
+        return NULL;
+    }
+    S3Font *f = (S3Font *)malloc(sizeof(S3Font));
+    if (!f) { FT_Done_Face(face); return NULL; }
+    f->face  = face;
+    f->pixel = (mode == S3_FONT_PIXEL);
+    return f;
+}
+
+void s3_font_close(S3Font *f) {
+    if (!f) return;
+    if (f->face) FT_Done_Face(f->face);
+    free(f);
+}
+
+int s3_font_render_utf8(const S3Font *f, const char *utf8,
+                        uint8_t **out_rgba, int *w, int *h, uint32_t color) {
+    *out_rgba = NULL; *w = 0; *h = 0;
+    if (!f || !f->face || !utf8 || !utf8[0]) return -1;
+
+    FT_Face face = f->face;
+    /* 像素模式关 hinting / autohint（矢量轮廓会被吸附变形，像素字体要的就是原样）；
+     * 高清模式用默认（含 hinting + 抗锯齿灰度）。 */
+    FT_Int32 flags = FT_LOAD_RENDER | FT_LOAD_COLOR;
+    if (f->pixel) flags |= FT_LOAD_NO_HINTING | FT_LOAD_NO_AUTOHINT;
+
+    /* 第一遍：量尺寸（glyph slot 会被后续 Load_Char 覆盖，故不能直接边量边画） */
+    const char *p = utf8;
+    int pen = 0, asc = 0, desc = 0, any = 0;
+    while (*p) {
+        uint32_t ch = utf8_next(&p);
+        if (FT_Load_Char(face, (FT_ULong)ch, flags) != 0) continue;
+        FT_GlyphSlot g = face->glyph;
+        pen += (int)(g->advance.x >> 6);
+        int top  = g->bitmap_top;
+        int down = (int)g->bitmap.rows - top;
+        if (top  > asc)  asc  = top;
+        if (down > desc) desc = down;
+        any = 1;
+    }
+    if (!any) return -1;
+
+    int width  = pen > 0 ? pen : 1;
+    int height = (asc + desc) > 0 ? (asc + desc) : 1;
+    uint8_t *out = (uint8_t *)calloc((size_t)width * height, 4);
+    if (!out) return -1;
+
+    uint8_t R = (uint8_t)((color >> 16) & 0xFF);
+    uint8_t G = (uint8_t)((color >> 8)  & 0xFF);
+    uint8_t B = (uint8_t)( color        & 0xFF);
+
+    /* 第二遍：按基线对齐逐个贴字形（灰度 bitmap 直接当 alpha） */
+    p = utf8;
+    pen = 0;
+    while (*p) {
+        uint32_t ch = utf8_next(&p);
+        if (FT_Load_Char(face, (FT_ULong)ch, flags) != 0) continue;
+        FT_GlyphSlot g  = face->glyph;
+        FT_Bitmap   *bm = &g->bitmap;
+        int ox = pen + g->bitmap_left;
+        int oy = asc  - g->bitmap_top;
+        if (bm->buffer && bm->pixel_mode == FT_PIXEL_MODE_GRAY) {
+            for (unsigned ry = 0; ry < bm->rows; ++ry) {
+                int Y = oy + (int)ry;
+                if (Y < 0 || Y >= height) continue;
+                const unsigned char *src = bm->buffer + (size_t)ry * (size_t)bm->pitch;
+                for (unsigned rx = 0; rx < bm->width; ++rx) {
+                    int X = ox + (int)rx;
+                    if (X < 0 || X >= width) continue;
+                    unsigned char a = src[rx];
+                    if (!a) continue;
+                    size_t o = ((size_t)Y * width + X) * 4;
+                    out[o + 0] = R;
+                    out[o + 1] = G;
+                    out[o + 2] = B;
+                    out[o + 3] = a;
+                }
+            }
+        }
+        pen += (int)(g->advance.x >> 6);
+    }
+
+    *out_rgba = out; *w = width; *h = height;
+    return 0;
+}
+
+#else /* !HAVE_TTF && !HAVE_FREETYPE —— 无字体子系统时的安全降级（调用方不渲染文本） */
 
 int s3_font_ready(void) { return 0; }
 int s3_font_init(const char *fonts_dir) { (void)fonts_dir; return -1; }

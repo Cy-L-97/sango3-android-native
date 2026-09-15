@@ -19,6 +19,8 @@
 ----
   python tools/build_android.py            # 构建 APK
   python tools/build_android.py --install  # 构建并 adb 安装到模拟器
+  python tools/build_android.py --install --push-assets  # 装 APK 并推编码表/字体
+  python tools/build_android.py --push-assets            # 只推资源（不重建）
   python tools/build_android.py --clean    # 清理
 """
 import os
@@ -112,6 +114,12 @@ def sync_sources():
         (os.path.join(ROOT, "third_party", "SDL2-src"),
          os.path.join(WORK, "third_party", "SDL2-src"), False),
     ]
+    # FreeType 源码（目录带版本号，glob 取版本号最大的）—— 字体后端，只在首次复制
+    ft_dirs = sorted(glob.glob(os.path.join(ROOT, "third_party", "freetype-*")))
+    if ft_dirs:
+        pairs.append((ft_dirs[-1],
+                      os.path.join(WORK, "third_party", os.path.basename(ft_dirs[-1])),
+                      False))
     for src, dst, always in pairs:
         if not os.path.isdir(src):
             continue
@@ -242,12 +250,42 @@ def sign_apk(apk):
     return signed
 
 
+def adb_path():
+    return LDP_ADB if os.path.exists(LDP_ADB) else os.path.join(SDK, "platform-tools", "adb.exe")
+
+
+def push_assets():
+    """把编码表 / 字体推到设备的**应用外部私有目录**。
+
+    公共 /sdcard 需运行时存储权限，未授权时进程会启动即退出（M4 踩过的坑），
+    所以资源一律放 /sdcard/Android/data/<pkg>/files/Sango3/。
+    """
+    adb = adb_path()
+    dst = "/sdcard/Android/data/%s/files/Sango3" % PKG
+    run([adb, "shell", "mkdir", "-p", dst + "/encoding", dst + "/fonts"])
+    for sub in ("encoding", "fonts"):
+        src = os.path.join(ROOT, "engine", "assets", sub)
+        if not os.path.isdir(src):
+            continue
+        for name in sorted(os.listdir(src)):
+            p = os.path.join(src, name)
+            if not os.path.isfile(p):
+                continue
+            print("push: %s/%s (%.1f MB)" % (sub, name, os.path.getsize(p) / 1048576.0))
+            run([adb, "push", p, "%s/%s/%s" % (dst, sub, name)])
+    print("assets ->", dst)
+
+
 def main():
     global ENV
     ENV = make_env()
     if "--clean" in sys.argv:
         shutil.rmtree(WORK, ignore_errors=True)
         print("cleaned", WORK)
+        return 0
+    if "--push-assets" in sys.argv and len(sys.argv) == 2:
+        # 只推资源，不重建（PAK 已推过、字体换版本时用）
+        push_assets()
         return 0
     if not check_env():
         return 1
@@ -259,8 +297,9 @@ def main():
     print("=== done in %.1fs ===" % (time.time() - t0))
     print("APK:", signed)
     if "--install" in sys.argv:
-        adb = LDP_ADB if os.path.exists(LDP_ADB) else os.path.join(SDK, "platform-tools", "adb.exe")
-        run("\"%s\" install -r \"%s\"" % (adb, signed))
+        run([adb_path(), "install", "-r", signed])
+    if "--push-assets" in sys.argv:
+        push_assets()
     return 0
 
 

@@ -7,11 +7,11 @@
 
 ## 路线
 A→B 递进：A 档（2~4 周 demo 级原生原型）→ B 档（4~6 月忠实还原）。
-**当前进度**（2026-09-14）：**M2 收口** + **M4 跑通** —— 主菜单已在雷电模拟器正常运行
-（`libmain.so` + `libSDL2.so`，截图 `tmp/android_shot2.png`）。
-仓库历史已净化（HEAD `1345450`，38 提交，`main`）—— 误入库的两张版权截图已从历史彻底移除。
+**当前进度**（2026-09-15）：**M2 收口** + **M4 字体打通** —— 主菜单 + 文本（V2.2C）已在
+雷电模拟器正常运行（FreeType 直连后端）。
+仓库历史已净化（38 提交，`main`）—— 误入库的两张版权截图已从历史彻底移除。
 M2 遗留：地图地形层（BlkData + `Shape\SF\Map` 瓦片拼接）；M3 部分就绪；
-M4 遗留：字体（SDL2_ttf 需另编 FreeType）、EXTEND 宽高比。
+M4 遗留：EXTEND 宽高比（字体已于 09-15 用 FreeType 直连解决）。
 
 ## A 档里程碑
 - **M0**（已完）格式破解 + 分辨率无关渲染骨架
@@ -105,7 +105,11 @@ M4 遗留：字体（SDL2_ttf 需另编 FreeType）、EXTEND 宽高比。
   ⑦ d8 需 JDK17（显式 `JAVA_HOME`）⑧ APK 必须含 `libSDL2.so`（Java `System.loadLibrary("SDL2")`）
   ⑨ 资源路径用私有目录；另：`__android_log_print` 需链接 `log`；
   **GLES 通道顺序相对 SDL 定义是反转的 → Android 用 `SDL_PIXELFORMAT_ABGR8888`**（否则整屏偏色）。
-- 已知限制：首版**无字体**（SDL2_ttf 的 Android 版需另编 FreeType）；EXTEND 宽高比未做。
+- 已知限制：~~首版无字体~~（**2026-09-15 已解决**：FreeType 2.13.3 直连后端，
+  `SANGO3_HAVE_FREETYPE`，实测安卓端文本 V2.2C 正常显示）；EXTEND 宽高比未做。
+- **字体后端选型**：不用 SDL2_ttf（CMake 拉 harfbuzz 链路长）；font.c 内双后端
+  （`SANGO3_HAVE_TTF`=PC / `SANGO3_HAVE_FREETYPE`=Android），接口一致。
+  PC 侧验证：freetype-pc 静态库 + 探针出图两种模式均正确（`tmp/font_hd24.png`）。
 
 ## 数据确定性产物清单
 - `engine/assets/encoding/big5_cp950.bin` ← `tools/gen_encoding_tables.py`

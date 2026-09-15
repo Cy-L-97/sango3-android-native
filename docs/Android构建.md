@@ -45,7 +45,11 @@ tools/build_android.py           # 一键构建 + 可选安装
 要点：
 - 与 PC 端**共用同一套 `engine/src`**（一套代码两端编译）；差异只在编译宏与资源路径。
 - `SANGO3_ANDROID` 宏让 `sango3app.c` 走 Android 分支（固定资源路径、不解析 argv）。
-- 首版**不含 SDL2_ttf**（其 Android 版需另编 FreeRTYPE）→ 不定义 `SANGO3_HAVE_TTF`，文本层自动跳过。
+- **字体走 FreeType 直连**：定义 `SANGO3_HAVE_FREETYPE=1`，FreeType 源码（
+  `third_party/freetype-*`，目录带版本号、CMake 里用 glob 取最新版本）由 `add_subdirectory` 一并编译。
+  **不用 SDL2_ttf** —— 其 CMake 会拉 harfbuzz / plutosvg，NDK 交叉编译链路长。
+  `font.c` 里 SDL2_ttf 与 FreeType 两个后端对外接口一致（PC 用前者，Android 用后者）。
+  FreeType 的可选外部依赖全部关掉：`FT_DISABLE_{ZLIB,BZIP2,PNG,HARFBUZZ,BROTLI}=ON`。
 - CMake 必须传 `-DCMAKE_MAKE_PROGRAM=<ninja>`，否则报 `unable to find a build program corresponding to "Ninja"`。
 
 ---
@@ -79,6 +83,8 @@ tools/build_android.py           # 一键构建 + 可选安装
 # 构建 + 安装到模拟器（含启动与截图）
 python tools/build_android.py            # 只构建
 python tools/build_android.py --install  # 构建并 adb install
+python tools/build_android.py --install --push-assets  # 装 APK + 推 encoding/fonts
+python tools/build_android.py --push-assets            # 只推资源（不重建）
 python tools/build_android.py --clean    # 清理 ASCII 工作区 E:/sango3-android
 
 # 资源推送（PAK 是版权文件，不入库；用 adb push）
