@@ -58,6 +58,13 @@
 3. 素材按 `1×/2×/3×/4×` 分级，引擎按输出分辨率自动选档 —— **高清化因此是一次纯资源替换，不动代码**；
 4. 文本渲染统一经「显示语言层」，业务代码不直接接触 Big5 原文。
 
+**第 5 条（2026-09-15 增补）——"逻辑分辨率"不是常量**：
+素材分辨率高于 640×480 时（如战略地图 `Map.shp` 1024×768），该场景**应把逻辑画布切到素材原生
+分辨率**（`sango3_presenter_set_logical_size`），让 GPU 只做 2~3× 放大；
+塞进 640×480 画布再放大 = 先降采样再放大，**必然发糊**（用户实测）。
+配套：`SANGO3_ASPECT_EXTEND`（UI 类场景，条带延展不留黑边）/ `SANGO3_ASPECT_COVER`
+（内容类场景如地图，铺满裁切、顶对齐）；滤镜随场景切换（像素素材 NEAREST / 照片级大图 BILINEAR）。
+
 ## 技术栈
 
 C11（数据层 / 渲染核心）+ C++17（游戏逻辑）· SDL2 · CMake + Ninja + MSVC · 目标 Android NDK
@@ -86,6 +93,11 @@ C11（数据层 / 渲染核心）+ C++17（游戏逻辑）· SDL2 · CMake + Nin
 python tools/build_pc.py
 python tools/build_pc.py --reconfigure     # CMake 结构变更后
 
+# 安卓构建（不依赖 gradle；工具链见 docs/Android构建.md）
+python tools/build_android.py                       # 只出 APK
+python tools/build_android.py --install             # 构建 + 安装到模拟器
+python tools/build_android.py --install --push-assets   # 再推 encoding / fonts 到设备
+
 # 依赖部署（换机器时执行一次）
 python tools/fetch_sdl.py && python tools/setup_sdl.py
 python tools/fetch_fonts.py && python tools/setup_fonts.py    # 字体已入库，通常无需重跑
@@ -111,7 +123,7 @@ python tools/render_scene.py      # 分辨率矩阵：640×480 / 1080p / 2K / 4K
 
 详见 `换机开工清单.md`。
 
-## 当前状态
+## 当前状态（更新于 2026-09-15，HEAD `3bb76f4`）
 
 - [x] 可行性评估（v1 兼容层方案 → 已否决）
 - [x] 原生方案 v2 定稿
@@ -126,7 +138,18 @@ python tools/render_scene.py      # 分辨率矩阵：640×480 / 1080p / 2K / 4K
 - [x] A 档 M1-a：数据层 + 规则引擎（9024 项 C↔Python 全过）
 - [x] A 档 M1-b：GPU 路径 A 渲染 + SDL_ttf 字体显示层
 - [x] A 档 M2-1~M2-4：UI 布局系统（`Menu.ini`，11530 项 C↔Python 全过）
-- [ ] A 档 M2 剩余：控件树运行时 → SHP 图元解码 → 主菜单场景 → 文本绘制
-- [ ] A 档 M3：字体度量适配层 + 简中显示层 C 侧查表
-- [ ] A 档 M4：安卓集成（最小 APK + `EXTEND` 宽高比 + 触控反算 + 2K 压测）
+- [x] **A 档 M2 收口**：控件树运行时 + 交互态（悬停/按下）+ 场景切换（99 界面可渲染，
+      场景 = 一组 root）；修 `size_t` 下溢堆越界；回归 9024 + 11530 全过
+- [x] **A 档 M4 跑通**：安卓手工打包链路（不依赖 gradle）+ 主菜单在雷电模拟器运行
+- [x] **A 档 M4 字体**：FreeType 直连后端（不用 SDL2_ttf，避免 harfbuzz 链路）→ 安卓中文文本正常
+- [x] **EXTEND 宽高比**：长屏不留黑边（内容按长边撑满 + 边缘条带镜像延展）
+- [x] **M3-lite 自定义武将创建**：`editor_scene` 自绘表单（姓名真文本输入 / 性别 /
+      头像翻页 / 四维随机 / JSONL 保存）；「登錄武將 = 创建自创武将」（非浏览列表）
+- [x] **M3-lite 开局流程**：選擇時期（7 剧本）→ 選擇君主（含自定义武将）→ 開局
+      （数据链 `Setting\City01~07.ini`；开局状态写 `start_state.json`）
+- [x] **战略层地图**：`Shape\AD\Base\Map.shp` 整图（1024×768）+ 70 城（`MenuMap.ini`）
+      + 拖动查看（视口滚动、原生分辨率 1:1）；详见 `docs/战略地图格式.md`
+- [ ] **下一步**：城池信息面板（内政/军事入口）· 势力着色（`Nation.ini` 旗号）· 城名文字层
+- [ ] A 档 M3 剩余：字体度量适配层 + 简中显示层 C 侧查表（数据/文本层）
 - [ ] A 档 M5：高清素材包（放最后做）
+- [ ] 远端推送仍待用户提供私有仓库地址（策略 B 已就绪）

@@ -2,16 +2,16 @@
 
 ## 新会话 / 换机续接（先读）
 1. 本文件（MEMORY.md，长期账本）→ 2. 最近一篇日志 `memory/YYYY-MM-DD.md` → 3. **`docs/项目约定.md`（规则与口径，用户要求"必须遵守"）**。
-   再按任务查：`docs/分辨率与高清化架构.md` / `docs/必杀技学习规则.md` / `docs/UI布局与Menu.ini.md`。
+   再按任务查：`docs/分辨率与高清化架构.md` / `docs/必杀技学习规则.md` / `docs/UI布局与Menu.ini.md` / `docs/战略地图格式.md` / `docs/Android构建.md`。
    上下文丢失不影响续接；**事实以文档为准**，不依赖聊天记录。
 
 ## 路线
 A→B 递进：A 档（2~4 周 demo 级原生原型）→ B 档（4~6 月忠实还原）。
-**当前进度**（2026-09-15）：**M2 收口** + **M4 字体打通** —— 主菜单 + 文本（V2.2C）已在
-雷电模拟器正常运行（FreeType 直连后端）。
-仓库历史已净化（38 提交，`main`）—— 误入库的两张版权截图已从历史彻底移除。
-M2 遗留：地图地形层（BlkData + `Shape\SF\Map` 瓦片拼接）；M3 部分就绪；
-M4 遗留：EXTEND 宽高比（字体已于 09-15 用 FreeType 直连解决）。
+**当前进度**（2026-09-15，HEAD `3bb76f4`）：**M2 收口 + M4 跑通（含字体/EXTEND）+ M3-lite 开局流程 + 战略层地图**
+—— 已可从主菜单一路点到战略地图：選擇時期 → 選擇君主 → 開局 → 地图（70 城，可拖动）。
+仓库历史已净化（38 提交 → 现 45 提交，`main`）—— 误入库的两张版权截图已从历史彻底移除。
+**下一步（明日起点）**：城池信息面板（内政/军事入口）· 势力着色（`Nation.ini` 旗号）·
+城名文字层（`CitiesName.shp`）· blk 逻辑层（通行判定）。A 档 M5（高清包）仍放最后。
 
 ## A 档里程碑
 - **M0**（已完）格式破解 + 分辨率无关渲染骨架
@@ -22,44 +22,30 @@ M4 遗留：EXTEND 宽高比（字体已于 09-15 用 FreeType 直连解决）�
   - **GPU 路径 A 已完成**：`engine/src/presenter.c/.h`（逻辑画布作 SDL 静态纹理上传，GPU 按宽高比/滤镜缩放，窗口可拖动缩放）；`sango3view show` 默认开 2K 窗口，支持 `--out/--aspect/--filter`；dummy 驱动下验证通过（窗口物理尺寸/内容矩形/帧数均符合公式）
   - 顺带修正旧 `sango3view_sdl.c` 的纹理格式 bug（误用 `ABGR8888`，应为 `RGBA8888`）
   - SDL_ttf 字体层已完成：`font.c/.h`（像素/高清双模式 + 回退链），中文自检通过
-- **M2**（UI 布局系统已完成；场景驱动进行中）UI 框架（读 `Menu.ini`，M2-1~M2-4 已完成）+ 场景驱动（地图 + 战场，待做）
-  - **M3-lite（2026-09-15）自定义武将创建已跑通**：`editor_scene.c/.h` 自绘表单
-    （姓名真文本输入/性别/头像/四维随机/保存 JSONL）；presenter 增文本轮询接口；
-    **登录武将=创建自创武将**（用户纠正，勿再当浏览列表）；开局注入待做。
-  - **M3-lite 开局流程第一步已跑通（2026-09-15）**：選擇時期 → 選擇君主 → **战略层地图**。
-    **剧本→君主数据在 `Setting\City01~07.ini`**（城池的 Lord 字段），
-    势力定义在 `Setting\Nation.ini`（旗号/外交，战略层要用）；
-    剧本按钮 cmd=11..17。`kingdom_scene.c/.h` 自绘君主表；
-    开局状态写 `start_state.json`。
-  - **战略层（2026-09-15）**：地图是**预烘焙整图** `Shape\AD\Base\Map.shp`（1024×768，
-    含地形/城池/道路），城市 = MenuMap.ini 的 CITYBUTTON（像素坐标）；blk 只是通行属性层。
-    `strategy_scene.c/.h` + `SANGO3_ASPECT_COVER`（铺满裁切、顶对齐）。
-    详见 `docs/战略地图格式.md`。
-  - **M2-1~M2-4 已完成**：`ini.c` 支持 `#include` 递归展开；`ui.c/.h` 解析 Menu.ini；
-    `ui_probe.c` 验证器；`tools/build_ui.py` + `tools/verify_ui_c.py`
-    **11530 项字段级 C↔Python 完全一致**
-  - 数据口径：**必须取 Update.PAK 的 Menu.ini**（WINDOW 325 / ICON 303 / COLOR 36；
-    Sango3.PAK 版是 323/302/36）；`define.ini` 只在 Sango3.PAK → 两包都开，Update 覆盖
-  - 详见 `docs/UI布局与Menu.ini.md`（含五个「不报错但静默错」的坑）
-  - **M2-5 已完成**：`menu_scene.c/.h`（控件树运行时）+ `menu_probe.c`（`sango3menu`）+ `tools/render_menu.py`。
-    主菜单出图 = 背景 `Main.shp`(640×480) + 5 按钮 `MM\Button\*.shp`(172×46) + 文本 `V2.2C`；
-    `drawn=6 / icon_missing=0 / asset_missing=0 / text=1`。
-  - **素材层简繁混杂**：主菜单 / 设定选项等素材是**简体**（「开始游戏」「选项设定」），
-    而存档界面素材是**繁体**（「讀取自動存檔」）→ 图片内文字**无法**用查表转换，
-    需 M5 高清包重绘时一并统一；数据层 / 文本层仍走繁→简映射表。
-  - **`LogoFire01.SHP` 是 SHP 特殊变体**：偏移表值域异常（`frame range invalid`），火焰动画层暂跳过；
-    失败已由 summary 的 `decode_fail <路径> <原因>` 可见（不再静默）。
-  - **M2-6 交互态**：`menu_scene` 加 `state_of`（逐控件状态回调）+ `hit_test`（后画优先）+ 解码缓存；
-    `presenter` 暴露 `S3Pointer`（逻辑坐标 + 左右键电平/边沿）；新增 `sango3app`（真实窗口交互主程序，
-    右键返回、场景栈）。
-    ⚠ **四态语义**：非 normal 态值为 `Normal` = **沿用 normal 素材（回退）**，不是"无素材"；
-    按占位跳过会让悬停时背景整块消失（drawn 6→5）。
-  - **M2-7 场景切换**：**场景 = 一组 root**（原版同一时刻叠加显示多个窗口）。
-    映射：**1→選擇時期[100] / 2→存檔[220,201~210,240,230] / 3→登錄武將[400,410] / 5→設定選項[300~309] / 6→退出**。
-    实测各场景 `drawn` 12~13、`asset_missing=0`。
-  - **列表类控件**（BUTTONREPORT / LIST）的内容是**运行时数据**，当前只渲染 Menu.ini 声明的框架。
-  - 菜单 command → 界面 id 对照见 `tmp/list_roots.py` 的输出（99 个 root 已枚举）。
-  - 待做：其余界面映射；地图 / 战场场景
+- **M2**（✅ 09-14 收口）UI 布局系统 + 控件树运行时 + 交互态 + 场景切换
+  - M2-1~M2-4：`ini.c`（#include 递归）→ `ui.c/.h`（Menu.ini）→ `ui_probe.c` + `tools/build_ui.py`
+    + `tools/verify_ui_c.py`（**11530 项 C↔Python 完全一致**）
+  - 数据口径：**必须取 Update.PAK 的 Menu.ini**（两包都开，Update 覆盖）；详见 `docs/UI布局与Menu.ini.md`
+  - M2-5/6/7：`menu_scene.c/.h`（控件树运行时 + 四态 + 命中测试 + 解码缓存）、
+    `menu_probe.c`（`sango3menu` 离线出图）、`sango3app.c`（真实窗口交互主程序）
+  - **场景 = 一组 root**（叠加显示）；映射：1→選擇時期 / 2→存檔 / 3→登錄武將 /
+    5→設定選項 / 6→退出；剧本按钮 cmd=**11..17** → `City01~07.ini`
+- **M3-lite**（✅ 09-15）自定义武将 + 开局流程 + 战略层地图
+  - `editor_scene.c/.h`：创建自定义武将表单（姓名**真文本输入**（安卓中文 IME 实测可用）/
+    性别 / 头像（原版自创脸谱 `Shape\Portrait\{mFace001-030,wFace001-020}.SHP`）/
+    四维随机 / 保存 JSONL）；**「登錄武將」= 创建自创武将**（用户纠正，勿当浏览列表）
+  - `kingdom_scene.c/.h`：選択君主（剧本数据 `Setting\City01~07.ini` 的 Lord 字段）
+  - `strategy_scene.c/.h`：战略层地图（整图 `Shape\AD\Base\Map.shp` 1024×768 + 70 城 +
+    视口拖动）；**详见 `docs/战略地图格式.md`**
+  - 开局状态写 `start_state.json`（Android 私有目录 / PC `tmp/`）
+- **M4**（✅ 09-14 跑通；09-15 补齐字体与 EXTEND）
+  - Android 手工打包链路（不依赖 gradle）→ 主菜单在雷电模拟器运行；
+    **详见 `docs/Android构建.md`**（9 个坑 + 两条非报错型坑）
+  - **字体：FreeType 直连后端**（`SANGO3_HAVE_FREETYPE`；不用 SDL2_ttf，避免 harfbuzz 链路）
+  - **EXTEND**：长屏不留黑边（内容按长边撑满 + 边缘条带镜像延展）；
+    **COVER**：内容类场景（地图）铺满裁切、**顶对齐**
+  - 遗留：无（2K 压测可后补）
+- **M5**（未启动，按约定放最后）素材高清化（纯资源替换）+ 素材层简繁统一
 
 ## 5 项需求技术落点
 | # | 需求 | 实现位置 |
@@ -117,11 +103,47 @@ M4 遗留：EXTEND 宽高比（字体已于 09-15 用 FreeType 直连解决）�
   ⑦ d8 需 JDK17（显式 `JAVA_HOME`）⑧ APK 必须含 `libSDL2.so`（Java `System.loadLibrary("SDL2")`）
   ⑨ 资源路径用私有目录；另：`__android_log_print` 需链接 `log`；
   **GLES 通道顺序相对 SDL 定义是反转的 → Android 用 `SDL_PIXELFORMAT_ABGR8888`**（否则整屏偏色）。
-- 已知限制：~~首版无字体~~（**2026-09-15 已解决**：FreeType 2.13.3 直连后端，
-  `SANGO3_HAVE_FREETYPE`，实测安卓端文本 V2.2C 正常显示）；EXTEND 宽高比未做。
+- 已知限制：无（字体与 EXTEND 均已于 2026-09-15 完成）。
 - **字体后端选型**：不用 SDL2_ttf（CMake 拉 harfbuzz 链路长）；font.c 内双后端
   （`SANGO3_HAVE_TTF`=PC / `SANGO3_HAVE_FREETYPE`=Android），接口一致。
   PC 侧验证：freetype-pc 静态库 + 探针出图两种模式均正确（`tmp/font_hd24.png`）。
+- **安卓实操补充（2026-09-15）**：
+  - `adb install -r` 在本机雷电上**会卡死**（300s 无响应）→ 用
+    `adb push apk /data/local/tmp/` + `adb shell pm install -r`（<1s）；已固化进 `tools/build_android.py`。
+  - 模拟器**本环境无法自动启动**（GUI 进程被拦截）→ 用 `ldconsole.exe launch --index 0`
+    或请用户手动启动；`ldconsole list2` 可查实例。
+  - 文本输入测试可用 `adb shell input text`（英文）；**中文 IME 用户实测可用**（存档里出现手输中文名）。
+  - 窗口尺寸实测：横屏 **2560×1392**，竖屏 1080×1848。
+  - `input tap` 注入坐标与 presenter 反算存在 ~72px(y) 偏差（原因未查，不影响真人操作；
+    自动化验证时按需补偿）。
+  - ⚠ **用户在场操作模拟器时不要用 adb 自动点击**（会点到模拟器桌面/商店，干扰用户）——
+    改用"数据侧离线验证 + 交用户实测"。
+
+## 渲染管线要诀（2026-09-15 实战总结，改渲染前必读）
+1. **"逻辑分辨率"不是常量**：素材分辨率高于 640×480 时（地图 1024×768），把逻辑画布
+   切到素材原生分辨率（`sango3_presenter_set_logical_size`）→ GPU 只放大 2~3×。
+   塞进 640×480 再放大 = 先降采样再放大，必然发糊（用户实测：截图 PNG 500KB→4.5MB）。
+2. **宽高比三选一**：`PILLARBOX`（留黑边）/ `EXTEND`（UI 类场景：按长边撑满 + 边缘条带
+   镜像延展，不留黑边不变形）/ `COVER`（内容类场景：铺满裁切，**顶对齐**——居中裁会把
+   顶部信息条裁到屏幕外）。均可运行时切换（`set_aspect`）。
+3. **滤镜随场景切**：像素素材 `NEAREST`（锐利）↔ 照片级大图 `BILINEAR`（平滑）。
+4. **坐标语义**：INI 里**子窗口 Range 相对父窗口**（渲染/命中都要累计父偏移）；
+   **城市按钮 Range 是矩形左上角**，中心 = `+w/2, +h/2`。
+5. **每帧必须清画布**：场景不一定是全屏覆盖（子场景只占部分屏幕），不清屏会残留上一场景像素。
+6. **视口滚动优于整图平移**：画布尺寸 = 屏幕宽高比对应的地图区域，1:1 裁取（清晰度不损）。
+
+## M3/M4 追加的「不报错但静默错」教训（接前文）
+5. **快速点按丢失**：按下/抬起落在同一帧时，用"电平判定抬起"（`prev_ldown`）会整次丢点击
+   → 用**按下边沿记录 press + 无按压即触发**。
+6. **不清画布**（见要诀 5）。
+7. **安卓 Back 键**：默认会退出 Activity → 需 `SDL_HINT_ANDROID_TRAP_BACK_BUTTON=1`
+   拦下，再把 `SDLK_AC_BACK` 当"右键返回"用。
+8. **纯 C 探针的 Windows 编码坑**（`tmp/` 脚本层面）：`argv` 是 ANSI(GBK) → 中文文本要
+   `CommandLineToArgvW` + `WideCharToMultiByte(CP_UTF8)` 重转；`fopen` 认不了中文路径 →
+   输出走 ASCII 路径（`E:/sango3-android/`）。
+9. **`git add` 后 commit 前的 CRLF 警告是正常的**（Windows），不是错误。
+10. **本机 `git` 不在 PATH**：用绝对路径
+    `%USERPROFILE%/.workbuddy/binaries/PortableGit/versions/*/cmd/git.exe`（Python subprocess 调用）。
 
 ## 数据确定性产物清单
 - `engine/assets/encoding/big5_cp950.bin` ← `tools/gen_encoding_tables.py`
@@ -131,6 +153,11 @@ M4 遗留：EXTEND 宽高比（字体已于 09-15 用 FreeType 直连解决）�
 - 全部可重建；上游变更（PAK/INI/繁简词条）后必须重跑 + 验证。
 - **游戏 PAK 定位**：`tools/build_ui.py` 的 `resolve_paks()`，候选 = 环境变量 `SANGO3_DIR`
   → `E:\Program Files (x86)\steam\steamapps\common\Sango3` 等。优先级 **Update.PAK 覆盖 Sango3.PAK**。
+- **玩家数据（运行时生成，位置随平台）**：
+  `custom_generals.jsonl`（自定义武将，JSONL 追加）/ `start_state.json`（开局状态）
+  —— Android 落应用私有目录 `/sdcard/Android/data/org.libsdl.org/files/Sango3/`，PC 落 `tmp/`。
+- **Android 资源推送**：`python tools/build_android.py --push-assets`（encoding + fonts →
+  设备私有目录）；PAK 需手工 push（305MB，`tmp/android_verify.py` 有完整流程参考）。
 
 ## 跨语言字段对照的教训
 C 与 Python 逐字段对照脚本（`tools/verify_data_c.py`）的列索引约定必须**双侧锁定在同一处**：
