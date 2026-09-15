@@ -39,6 +39,27 @@ struct Sango3Presenter {
  *   画布边缘条带拉伸填充；UI 仍锚定 4:3 安全区，命中判定不受影响。
  * 其他（pillarbox / stretch）：沿用 render.c 的视口数学。 */
 static void recompute_rect(Sango3Presenter *p) {
+    if (p->aspect == SANGO3_ASPECT_COVER) {
+        /* 铺满裁切：按短边撑满，目标矩形可能超出窗口（由 SDL 自动裁剪）。
+         * 地图类场景用它 —— 既没黑边也没变形，只是裁掉一部分边缘。 */
+        float sw = (float)p->out_w / (float)p->logical_w;
+        float sh = (float)p->out_h / (float)p->logical_h;
+        float scale = sw > sh ? sw : sh;
+        p->vp.dst_w = (int32_t)(p->logical_w * scale + 0.5f);
+        p->vp.dst_h = (int32_t)(p->logical_h * scale + 0.5f);
+        p->vp.dst_x = (p->out_w - p->vp.dst_w) / 2;
+        /* 高度方向**顶对齐**：画布顶部（信息条/标题）必须可见，多出来的裁在底部。
+         * 注意不能居中裁 —— 那样顶部信息条会被裁到屏幕外（实测踩坑）。 */
+        p->vp.dst_y = p->vp.dst_h > p->out_h ? 0 : (p->out_h - p->vp.dst_h) / 2;
+        p->vp.logical_w = p->logical_w;
+        p->vp.logical_h = p->logical_h;
+        p->vp.out_w = p->out_w;
+        p->vp.out_h = p->out_h;
+        p->vp.aspect = p->aspect;
+        p->vp.filter = p->filter;
+        p->vp.scale = scale;
+        return;
+    }
     if (p->aspect == SANGO3_ASPECT_EXTEND) {
         float sr = (float)p->out_w / (float)p->out_h;          /* 屏幕比例 */
         float lr = (float)p->logical_w / (float)p->logical_h;  /* 逻辑比例 4:3 */
@@ -273,6 +294,13 @@ int sango3_presenter_frame(Sango3Presenter *p, uint32_t *out_drawn) {
     p->drawn++;
     if (out_drawn) *out_drawn = p->drawn;
     return 0;
+}
+
+/* 运行时切换宽高比策略（如：菜单用 EXTEND、战略地图用 COVER）。 */
+void sango3_presenter_set_aspect(Sango3Presenter *p, Sango3Aspect aspect) {
+    if (!p || p->aspect == aspect) return;
+    p->aspect = aspect;
+    recompute_rect(p);
 }
 
 /* ---- 文本输入 / 按键轮询（frame() 收集，表单类界面取用；取走即出队） ---- */

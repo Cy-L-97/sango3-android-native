@@ -54,9 +54,12 @@ typedef enum {
 typedef enum {
     SANGO3_ASPECT_PILLARBOX = 0, /* 保持 4:3，两侧留边（默认，PC 桌面） */
     SANGO3_ASPECT_STRETCH   = 1, /* 拉伸铺满（会变形，仅作对照） */
-    SANGO3_ASPECT_EXTEND    = 2  /* 横向扩展视野：内容按**长边**撑满，
+    SANGO3_ASPECT_EXTEND    = 2, /* 横向扩展视野：内容按**长边**撑满，
                                   * 余下的两侧由画布边缘条带拉伸填充（不留黑边、不变形）。
                                   * UI 仍锚定 4:3 安全区 —— 手机长屏首选。 */
+    SANGO3_ASPECT_COVER     = 3  /* 铺满裁切：按**短边**撑满，溢出部分裁掉。
+                                  * 适合"内容本身就是画面"的场景（战略地图）——
+                                  * 无黑边、无变形、无条带痕迹。 */
 } Sango3Aspect;
 
 typedef struct {

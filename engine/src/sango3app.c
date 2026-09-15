@@ -27,6 +27,7 @@
 #include "font.h"
 #include "editor_scene.h"
 #include "kingdom_scene.h"
+#include "strategy_scene.h"
 
 #include <SDL.h>
 #include <stdio.h>
@@ -224,8 +225,70 @@ static int load_custom_generals(S3Kingdom *k, const char *path) {
     return n;
 }
 
-static int save_start_state(const char *path, S3Kingdom *k) {
-    int idx = s3_kingdom_selected(k);
+/* ---------------------------------------------- 战略层：城市表（MenuMap.ini）
+ * 城市窗口 = WND_CLASS_CITYBUTTON，Comment = 城名、Range = 地图像素坐标（1024×768）、
+ * Command = 101.. 归属判定：City0N.ini（该剧本）里同名城池的 Lord 是否等于所选君主。 */
+static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
+                       const char *my_lord, const char *truth_path) {
+    uint32_t len = 0;
+    uint8_t *data = pak_get(c, "Setting\\MenuMap.ini", &len);
+    if (!data) return -1;
+    S3Ini *ini = s3_ini_parse_inc(data, len, include_cb, c);
+    free(data);
+    if (!ini) return -2;
+
+    /* 先收集"我方城池名"（City0N.ini 里 Lord == 所选君主 的 Name） */
+    char mine[96][32];
+    int  n_mine = 0;
+    {
+        char pc[64];
+        snprintf(pc, sizeof pc, "Setting\\City%02d.ini", scenario_id);
+        uint32_t l2 = 0;
+        uint8_t *d2 = pak_get(c, pc, &l2);
+        if (d2) {
+            S3Ini *ci = s3_ini_parse_inc(d2, l2, include_cb, c);
+            free(d2);
+            if (ci) {
+                for (int i = 0; ; ++i) {
+                    const S3IniSection *sec = s3_ini_section_at(ci, "ITEM", i);
+                    if (!sec) break;
+                    const char *lord = s3_ini_str(sec, "Lord", NULL);
+                    const char *nm   = s3_ini_str(sec, "Name", NULL);
+                    if (lord && nm && my_lord && !strcmp(lord, my_lord) && n_mine < 96)
+                        snprintf(mine[n_mine++], 32, "%s", nm);
+                }
+                s3_ini_free(ci);
+            }
+        }
+    }
+
+    int n = 0;
+    for (int i = 0; ; ++i) {
+        const S3IniSection *sec = s3_ini_section_at(ini, "WINDOW", i);
+        if (!sec) break;
+        const char *cls = s3_ini_str(sec, "Class", NULL);
+        if (!cls || strcmp(cls, "WND_CLASS_CITYBUTTON") != 0) continue;
+        const char *nm = s3_ini_str(sec, "Comment", NULL);
+        char range[64] = "";
+        const char *rg = s3_ini_str(sec, "Range", NULL);
+        if (!nm || !rg) continue;
+        snprintf(range, sizeof range, "%s", rg);
+        int x = 0, y = 0, w = 0, h = 0;
+        if (sscanf(range, "%d%*[ ,]%d%*[ ,]%d%*[ ,]%d", &x, &y, &w, &h) < 2) continue;
+        int is_mine = 0;
+        for (int k = 0; k < n_mine; ++k)
+            if (!strcmp(mine[k], nm)) { is_mine = 1; break; }
+        s3_strategy_add_city(st, nm, x, y, is_mine);
+        ++n;
+    }
+    s3_ini_free(ini);
+    if (truth_path) (void)truth_path;
+    printf("strategy: %d cities (%d mine)\n", n, n_mine);
+    ALOG("strategy: %d cities (%d mine)", n, n_mine);
+    return n;
+}
+
+static int save_start_state(const char *path, S3Kingdom *k) {    int idx = s3_kingdom_selected(k);
     if (idx < 0) return -1;
     FILE *f = fopen(path, "wb");
     if (!f) return -2;
@@ -462,6 +525,7 @@ int main(int argc, char **argv) {
     int mode = 0;
     S3Editor *ed = NULL;
     S3Kingdom *kd = NULL;
+    S3Strategy *st = NULL;
     char start_msg[256] = "";
 #ifdef SANGO3_ANDROID
     const char *gen_path = "/sdcard/Android/data/org.libsdl.app/files/Sango3/custom_generals.jsonl";
@@ -570,21 +634,42 @@ int main(int argc, char **argv) {
             continue;
         }
         if (mode == 3) {
-            /* ================= 开局占位（战略层待接） ================= */
-            ms.roots = SC_EDITOR_BG;
-            ms.n_roots = NARR(SC_EDITOR_BG);
-            s3_menu_render(&ms, cv);
-            sango3_canvas_fill(cv, 40, 170, 560, 160, 16, 14, 26);
-            sango3_canvas_frame(cv, 40, 170, 560, 160, 2, 168, 140, 76);
-            draw_text_cb(&fc, cv, start_msg, 50, 200, 540, 40, 0xF2E0B0, 2, 0x8u | 0x4u);
-            draw_text_cb(&fc, cv, "战略层（地图）尚未接入 —— 点击或返回键回主菜单",
-                         50, 260, 540, 30, 0xC8C8C8, 1, 0x8u | 0x4u);
+            /* ================= 进入战略层 ================= */
+            if (!st) st = s3_strategy_new(read_asset_cb, &ctx, draw_text_cb, &fc);
+            if (s3_strategy_set_map(st, "Shape\\AD\\Base\\Map.shp") != 0)
+                ALOG("strategy map load FAILED");
+            s3_strategy_clear_cities(st);
+            if (kd) {
+                int sid = s3_kingdom_scenario(kd);
+                int si  = s3_kingdom_selected(kd);
+                load_cities(st, &ctx, sid,
+                            si >= 0 ? s3_kingdom_lord_name(kd, si) : NULL, NULL);
+            }
+            /* 地图是"内容本身" → 用 COVER（铺满裁切）而非 EXTEND 条带 */
+            sango3_presenter_set_aspect(p, SANGO3_ASPECT_COVER);
+            mode = 4;
+        }
+        if (mode == 4) {
+            /* ================= 战略层：地图 + 城市 ================= */
+            s3_strategy_render(st, cv);
             sango3_presenter_upload(p, cv->px);
             if (sango3_presenter_frame(p, &drawn)) break;
 
             S3Pointer pt;
             sango3_presenter_pointer(p, &pt);
-            if (pt.rclick || pt.lclick) { mode = 0; app.hover = app.press = 0; }
+            if (pt.rclick) {
+                sango3_presenter_set_aspect(p, SANGO3_ASPECT_EXTEND);  /* 菜单恢复条带延展 */
+                mode = 0; app.hover = app.press = 0;
+            } else {
+                static int spressing = 0;
+                static int32_t sx = -1, sy = -1;
+                if (pt.lclick) { spressing = 1; sx = (int32_t)pt.lx; sy = (int32_t)pt.ly; }
+                if (!pt.ldown && spressing) {
+                    spressing = 0;
+                    if ((int32_t)pt.lx == sx && (int32_t)pt.ly == sy)
+                        s3_strategy_on_click(st, sx, sy);
+                }
+            }
             SDL_Delay(16);
             continue;
         }
@@ -672,6 +757,7 @@ int main(int argc, char **argv) {
     s3_menu_scene_release(&ms);
     if (ed) s3_editor_free(ed);
     if (kd) s3_kingdom_free(kd);
+    if (st) s3_strategy_free(st);
     for (int k = 0; k < 3; ++k) if (fc.hd[k]) s3_font_close(fc.hd[k]);
     s3_font_quit();
     sango3_presenter_free(p);

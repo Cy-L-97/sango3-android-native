@@ -60,6 +60,9 @@ void sango3_presenter_window_size(const Sango3Presenter *p, int32_t *w, int32_t 
 /* 当前统一缩放系数（逻辑→物理，取内容矩形边长 / 逻辑边长）。 */
 float sango3_presenter_scale(const Sango3Presenter *p);
 
+/* 运行时切换宽高比策略并立即重算内容矩形（菜单 EXTEND ↔ 地图 COVER）。 */
+void sango3_presenter_set_aspect(Sango3Presenter *p, Sango3Aspect aspect);
+
 /* 指针状态（每次 frame() 后更新，坐标已反算到**逻辑空间**）。
  * lclick/rclick 是"按下边沿"，每帧自动清零 —— 交互判定用边沿而非电平。 */
 typedef struct {
