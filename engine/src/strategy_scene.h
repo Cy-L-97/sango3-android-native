@@ -40,6 +40,17 @@ void s3_strategy_clear_cities(S3Strategy *s);
 void s3_strategy_add_city(S3Strategy *s, const char *name,
                           int32_t mx, int32_t my, int32_t mw, int32_t mh, int mine);
 
+/* 视口：画布尺寸 = 视口尺寸，渲染时 1:1 从整图裁取该区域（零重采样）。
+ * 由调用方按屏幕宽高比调用 set_viewport —— 视口比例 = 屏幕比例时，
+ * COVER 下恰好铺满且无裁切，同时地图可拖动查看全图。 */
+void s3_strategy_set_viewport(S3Strategy *s, int32_t vw, int32_t vh);
+/* 拖动（dx,dy 为**手指/鼠标**的移动量；内部取反并 clamp 到地图范围内） */
+void s3_strategy_pan_view(S3Strategy *s, int32_t dx, int32_t dy);
+int  s3_strategy_view_w(const S3Strategy *s);
+int  s3_strategy_view_h(const S3Strategy *s);
+int  s3_strategy_view_x(const S3Strategy *s);
+int  s3_strategy_view_y(const S3Strategy *s);
+
 void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv);
 /* 逻辑坐标点击：命中某城则选中它（命中范围按地图缩放后的城市图标大小放宽） */
 void s3_strategy_on_click(S3Strategy *s, int32_t lx, int32_t ly);

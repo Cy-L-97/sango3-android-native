@@ -658,8 +658,31 @@ int main(int argc, char **argv) {
                 load_cities(st, &ctx, sid,
                             si >= 0 ? s3_kingdom_lord_name(kd, si) : NULL, NULL);
             }
-            /* 地图是"内容本身" → COVER（铺满裁切）+ 原生分辨率 + 平滑滤镜 */
-            sango3_presenter_set_logical_size(p, cv_map->w, cv_map->h);
+            /* 视口尺寸按屏幕宽高比取（保持地图原生像素 1:1 → 不放大不缩水）；
+             * 视口比例 == 屏幕比例 → COVER 下正好铺满，多余部分靠拖动查看。 */
+            {
+                int32_t ww = 0, wh = 0;
+                sango3_presenter_window_size(p, &ww, &wh);
+                int32_t mw = 1024, mh = 768;
+                int32_t vw = mw, vh = mh;
+                if (ww > 0 && wh > 0) {
+                    if ((int64_t)ww * mh >= (int64_t)wh * mw) {     /* 屏幕更宽 → 宽满 */
+                        vh = (int32_t)((int64_t)mw * wh / ww);
+                    } else {                                        /* 屏幕更窄 → 高满 */
+                        vw = (int32_t)((int64_t)mh * ww / wh);
+                    }
+                }
+                if (vw < 64) vw = 64;
+                if (vh < 64) vh = 64;
+                s3_strategy_set_viewport(st, vw, vh);
+                if (!cv_map || cv_map->w != vw || cv_map->h != vh) {
+                    if (cv_map) sango3_canvas_free(cv_map);
+                    cv_map = sango3_canvas_new(vw, vh, 0, 0, 0);
+                }
+                sango3_presenter_set_logical_size(p, vw, vh);
+                ALOG("strategy viewport %dx%d (window %dx%d)", vw, vh, ww, wh);
+            }
+            /* 地图是"内容本身" → COVER（视口==屏幕比例时正好铺满）+ 平滑滤镜 */
             sango3_presenter_set_aspect(p, SANGO3_ASPECT_COVER);
             sango3_presenter_set_filter(p, SANGO3_FILTER_BILINEAR);
             mode = 4;
@@ -679,13 +702,25 @@ int main(int argc, char **argv) {
                 sango3_presenter_set_logical_size(p, cw, ch);
                 mode = 0; app.hover = app.press = 0;
             } else {
-                static int spressing = 0;
-                static int32_t sx = -1, sy = -1;
-                if (pt.lclick) { spressing = 1; sx = (int32_t)pt.lx; sy = (int32_t)pt.ly; }
-                if (!pt.ldown && spressing) {
-                    spressing = 0;
-                    if ((int32_t)pt.lx == sx && (int32_t)pt.ly == sy)
-                        s3_strategy_on_click(st, sx, sy);
+                /* 拖动查看地图：按下→移动（超阈值算拖动，地图随手走）→
+                 * 抬起且未移动过才算点击选城（避免拖动误选）。 */
+                static int sdrag = 0, smoved = 0;
+                static int32_t spx = -1, spy = -1;
+                if (pt.lclick) {
+                    sdrag = 1; smoved = 0;
+                    spx = (int32_t)pt.lx; spy = (int32_t)pt.ly;
+                } else if (pt.ldown && sdrag) {
+                    int32_t dx = (int32_t)pt.lx - spx;
+                    int32_t dy = (int32_t)pt.ly - spy;
+                    if (dx > 1 || dx < -1 || dy > 1 || dy < -1) {
+                        s3_strategy_pan_view(st, -dx, -dy);   /* 地图反向移动 */
+                        spx = (int32_t)pt.lx; spy = (int32_t)pt.ly;
+                        smoved = 1;
+                    }
+                }
+                if (!pt.ldown && sdrag) {
+                    sdrag = 0;
+                    if (!smoved) s3_strategy_on_click(st, spx, spy);
                 }
             }
             SDL_Delay(16);
@@ -780,7 +815,7 @@ int main(int argc, char **argv) {
     s3_font_quit();
     sango3_presenter_free(p);
     sango3_canvas_free(cv);
-    sango3_canvas_free(cv_map);
+    if (cv_map) sango3_canvas_free(cv_map);
     s3_ui_free(&L);
     s3_ini_free(ini);
     for (int k = 0; k < ctx.n_ar; ++k) pak_close(&ctx.ar[k]);

@@ -33,6 +33,9 @@ struct S3Strategy {
 
     int32_t   off_x, off_y;      /* 平移（逻辑像素，当前版本 0） */
     int32_t   cv_w, cv_h;        /* 最近一次渲染用的画布尺寸（on_click 反算用） */
+    /* 视口（地图坐标）：画布只显示这一块，拖动改变 vp_x/vp_y */
+    int32_t   vp_x, vp_y, vp_w, vp_h;
+    int       vp_set;
 };
 
 S3Strategy *s3_strategy_new(S3StratReadAsset read_asset, void *asset_ud,
@@ -68,8 +71,54 @@ int s3_strategy_set_map(S3Strategy *s, const char *pak_path) {
     }
     s->map_ok = 1;
     snprintf(s->map_path, sizeof s->map_path, "%s", pak_path);
+    if (!s->vp_set) {                      /* 未设视口 → 默认全图 */
+        s->vp_x = s->vp_y = 0;
+        s->vp_w = s->map.width;
+        s->vp_h = s->map.height;
+    } else {
+        s3_strategy_set_viewport(s, s->vp_w, s->vp_h);   /* 重新 clamp */
+    }
     return 0;
 }
+
+void s3_strategy_set_viewport(S3Strategy *s, int32_t vw, int32_t vh) {
+    if (!s) return;
+    int32_t mw = s->map_ok ? s->map.width : 1024;
+    int32_t mh = s->map_ok ? s->map.height : 768;
+    if (vw <= 0) vw = mw;
+    if (vh <= 0) vh = mh;
+    if (vw > mw) vw = mw;
+    if (vh > mh) vh = mh;
+    s->vp_w = vw;
+    s->vp_h = vh;
+    s->vp_set = 1;
+    if (s->vp_x > mw - vw) s->vp_x = mw - vw;
+    if (s->vp_y > mh - vh) s->vp_y = mh - vh;
+    if (s->vp_x < 0) s->vp_x = 0;
+    if (s->vp_y < 0) s->vp_y = 0;
+}
+
+void s3_strategy_pan_view(S3Strategy *s, int32_t dx, int32_t dy) {
+    if (!s) return;
+    int32_t mw = s->map_ok ? s->map.width : 1024;
+    int32_t mh = s->map_ok ? s->map.height : 768;
+    /* 手指移动 dx → 地图内容反向移动（视口正向） */
+    s->vp_x += dx;
+    s->vp_y += dy;
+    if (s->vp_x < 0) s->vp_x = 0;
+    if (s->vp_y < 0) s->vp_y = 0;
+    if (s->vp_x > mw - s->vp_w) s->vp_x = mw - s->vp_w;
+    if (s->vp_y > mh - s->vp_h) s->vp_y = mh - s->vp_h;
+}
+
+int s3_strategy_view_w(const S3Strategy *s) {
+    return s ? (s->vp_set ? s->vp_w : (s->map_ok ? s->map.width : 1024)) : 1024;
+}
+int s3_strategy_view_h(const S3Strategy *s) {
+    return s ? (s->vp_set ? s->vp_h : (s->map_ok ? s->map.height : 768)) : 768;
+}
+int s3_strategy_view_x(const S3Strategy *s) { return s ? s->vp_x : 0; }
+int s3_strategy_view_y(const S3Strategy *s) { return s ? s->vp_y : 0; }
 
 void s3_strategy_clear_cities(S3Strategy *s) {
     if (s) { s->n_cities = 0; s->sel = -1; }
@@ -86,7 +135,8 @@ void s3_strategy_add_city(S3Strategy *s, const char *name,
     c->mine = mine;
 }
 
-/* 地图坐标 → 逻辑坐标（等比例铺满画布） */
+/* 地图坐标 → 逻辑坐标：先减去视口原点，再按画布/视口比例换算
+ * （视口尺寸 == 画布尺寸时即为 1:1，零缩放） */
 static int mine_count(const S3Strategy *s) {
     int n = 0;
     for (int i = 0; i < s->n_cities; ++i) if (s->city[i].mine) ++n;
@@ -95,12 +145,10 @@ static int mine_count(const S3Strategy *s) {
 
 static void map_to_logical(const S3Strategy *s, Sango3Canvas *cv,
                            int32_t mx, int32_t my, int32_t *lx, int32_t *ly) {
-    int32_t mw = s->map_ok ? s->map.width : 1024;
-    int32_t mh = s->map_ok ? s->map.height : 768;
-    if (mw <= 0) mw = 1024;
-    if (mh <= 0) mh = 768;
-    *lx = (int32_t)((int64_t)mx * cv->w / mw) - s->off_x;
-    *ly = (int32_t)((int64_t)my * cv->h / mh) - s->off_y;
+    int32_t vw = s->vp_w > 0 ? s->vp_w : (s->map_ok ? s->map.width : 1024);
+    int32_t vh = s->vp_h > 0 ? s->vp_h : (s->map_ok ? s->map.height : 768);
+    *lx = (int32_t)((int64_t)(mx - s->vp_x) * cv->w / vw);
+    *ly = (int32_t)((int64_t)(my - s->vp_y) * cv->h / vh);
 }
 
 void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
@@ -108,25 +156,30 @@ void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
     s->cv_w = cv->w; s->cv_h = cv->h;
     sango3_canvas_fill(cv, 0, 0, cv->w, cv->h, 10, 12, 20);
 
-    /* 地图整图：画布与素材同尺寸时 1:1 直拷（零重采样，最清晰）；否则最近邻缩放。
-     * 调用方（app）在战略层会把画布切成地图原生分辨率 —— 这是清晰度的关键。 */
+    /* 地图：从整图裁取视口区域；视口尺寸 == 画布尺寸时逐行 1:1 直拷（零重采样）。 */
     if (s->map_ok) {
         int32_t mw = s->map.width, mh = s->map.height;
         const uint8_t *src = s->map.rgba;
-        if (mw == cv->w && mh == cv->h) {
-            memcpy(cv->px, src, (size_t)mw * mh * 4);
-        } else {
+        int32_t vw = s->vp_w > 0 ? s->vp_w : mw;
+        int32_t vh = s->vp_h > 0 ? s->vp_h : mh;
+        if (vw == cv->w && vh == cv->h) {
             for (int32_t y = 0; y < cv->h; ++y) {
-                int32_t sy = (int32_t)((int64_t)y * mh / cv->h);
+                int32_t sy = s->vp_y + y;
+                if (sy < 0 || sy >= mh) continue;
+                memcpy(cv->px + (size_t)y * cv->w * 4,
+                       src + (size_t)sy * mw * 4 + (size_t)s->vp_x * 4,
+                       (size_t)vw * 4);
+            }
+        } else {                            /* 尺寸不匹配 → 最近邻兜底 */
+            for (int32_t y = 0; y < cv->h; ++y) {
+                int32_t sy = s->vp_y + (int32_t)((int64_t)y * vh / cv->h);
                 if (sy < 0 || sy >= mh) continue;
                 const uint8_t *srow = src + (size_t)sy * mw * 4;
                 uint8_t *drow = cv->px + (size_t)y * cv->w * 4;
                 for (int32_t x = 0; x < cv->w; ++x) {
-                    int32_t sx = (int32_t)((int64_t)x * mw / cv->w);
+                    int32_t sx = s->vp_x + (int32_t)((int64_t)x * vw / cv->w);
                     if (sx < 0 || sx >= mw) continue;
-                    const uint8_t *sp = srow + (size_t)sx * 4;
-                    uint8_t *dp = drow + (size_t)x * 4;
-                    dp[0] = sp[0]; dp[1] = sp[1]; dp[2] = sp[2]; dp[3] = sp[3];
+                    memcpy(drow + (size_t)x * 4, srow + (size_t)sx * 4, 4);
                 }
             }
         }
@@ -134,16 +187,16 @@ void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
 
     /* 城市标记：己方金色框；选中红框。其余城不额外标记 —— 地图整图自带城池图标。
      * 框大小按该城图标尺寸等比换算（大城/中城/小城/关卡尺寸不同）。 */
-    int32_t mw = s->map_ok ? s->map.width : 1024;
-    int32_t mh = s->map_ok ? s->map.height : 768;
+    int32_t vw = s->vp_w > 0 ? s->vp_w : (s->map_ok ? s->map.width : 1024);
+    int32_t vh = s->vp_h > 0 ? s->vp_h : (s->map_ok ? s->map.height : 768);
     for (int i = 0; i < s->n_cities; ++i) {
         int sel = (i == s->sel);
         int mine = s->city[i].mine;
         if (!sel && !mine) continue;
         int32_t lx, ly;
         map_to_logical(s, cv, s->city[i].mx, s->city[i].my, &lx, &ly);
-        int32_t hw = (int32_t)((int64_t)s->city[i].mw * cv->w / mw / 2) + 3;
-        int32_t hh = (int32_t)((int64_t)s->city[i].mh * cv->h / mh / 2) + 3;
+        int32_t hw = (int32_t)((int64_t)s->city[i].mw * cv->w / vw / 2) + 3;
+        int32_t hh = (int32_t)((int64_t)s->city[i].mh * cv->h / vh / 2) + 3;
         if (hw < 6) hw = 6;
         if (hh < 6) hh = 6;
         if (sel) {
@@ -163,10 +216,10 @@ void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
     if (s->draw_text) {
         char buf[96];
         if (s->sel >= 0 && s->sel < s->n_cities)
-            snprintf(buf, sizeof buf, "%s（%s）—— 点击其它城查看",
+            snprintf(buf, sizeof buf, "%s（%s）—— 拖动查看地图 / 点击其它城",
                      s->city[s->sel].name, s->city[s->sel].mine ? "我方" : "他方");
         else
-            snprintf(buf, sizeof buf, "战略层：点击城市查看（%d 城，我方 %d）",
+            snprintf(buf, sizeof buf, "战略层：拖动查看地图 · 点击城市（%d 城，我方 %d）",
                      s->n_cities, mine_count(s));
         s->draw_text(s->text_ud, cv, buf, 14, bar_y, cv->w - 28, bar_h, 0xF0DCA0, 3, 0x4u);
     }
@@ -177,13 +230,15 @@ void s3_strategy_on_click(S3Strategy *s, int32_t lx, int32_t ly) {
     int32_t mw = s->map.width, mh = s->map.height;
     int32_t cw = s->cv_w > 0 ? s->cv_w : 640;
     int32_t ch = s->cv_h > 0 ? s->cv_h : 480;
+    int32_t vw = s->vp_w > 0 ? s->vp_w : mw;
+    int32_t vh = s->vp_h > 0 ? s->vp_h : mh;
     int32_t hit = -1, best_d = 0;
     for (int i = 0; i < s->n_cities; ++i) {
-        /* 城市中心 → 画布坐标（与 render 同一套变换）；命中半径按图标尺寸 + 余量 */
-        int32_t ox = (int32_t)((int64_t)s->city[i].mx * cw / mw) - s->off_x;
-        int32_t oy = (int32_t)((int64_t)s->city[i].my * ch / mh) - s->off_y;
-        int32_t r  = (int32_t)((int64_t)s->city[i].mw * cw / mw / 2) + 6;
-        if (r < 10) r = 10;
+        /* 城市中心 → 画布坐标（与 render 同一套视口变换）；命中半径按图标尺寸 + 余量 */
+        int32_t ox = (int32_t)((int64_t)(s->city[i].mx - s->vp_x) * cw / vw);
+        int32_t oy = (int32_t)((int64_t)(s->city[i].my - s->vp_y) * ch / vh);
+        int32_t r  = (int32_t)((int64_t)s->city[i].mw * cw / vw / 2) + 8;
+        if (r < 12) r = 12;
         int32_t dx = lx - ox, dy = ly - oy;
         int32_t d = dx * dx + dy * dy;
         if (d <= r * r && (hit < 0 || d < best_d)) { hit = i; best_d = d; }
