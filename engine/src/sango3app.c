@@ -121,7 +121,11 @@ static const uint32_t SC_MAIN[]   = { 1 };
 static const uint32_t SC_AGE[]    = { 100 };                 /* 選擇時期 */
 static const uint32_t SC_SAVE[]   = { 220, 201, 202, 203, 204, 205, 206, 207,
                                       208, 209, 210, 240, 230 };  /* 存檔：招牌+10 槽+自動+確定/取消 */
-static const uint32_t SC_LOGIN[]  = { 400, 410 };            /* 登錄武將：面板 + 列表框架 */
+/* 登錄武將（選擇新君主）：借主菜单背景（不带其按钮）+ 新君主/麾下武将 tab
+ * + 武将列表框架 + 已登录武将标题。列表内容为运行时数据，后续里程碑绑定。
+ * 注：root 400（新增/更改/删除面板）与 440/441 同位置，是 tab 选中后的互斥态，暂不叠。 */
+static const uint32_t SC_LOGIN[]  = { S3_MENU_ROOT_ICON_ONLY | 1u,
+                                      440u, 441u, 410u, 430u };
 static const uint32_t SC_OPTION[] = { 300, 301, 302, 303, 304, 305, 306, 307,
                                       308, 309 };            /* 設定選項 */
 /* 战略 / 战术层：UI 面板组合。

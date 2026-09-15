@@ -51,6 +51,12 @@ typedef struct S3MenuCacheEnt S3MenuCacheEnt;
 
 #define S3_MENU_CACHE_MAX 64
 
+/* roots 数组元素标志：只画该窗口自身的 icon（含其贴图位置），
+ * 不递归子控件、不画文本 —— 用于"借用某个全屏窗口的背景图但不带它的按钮"，
+ * 如登录武将界面复用主菜单背景 Main.shp 但不要主菜单按钮。 */
+#define S3_MENU_ROOT_ICON_ONLY 0x80000000u
+#define S3_MENU_ROOT_ID(raw)   ((raw) & 0x7FFFFFFFu)
+
 typedef struct {
     const S3UiLayout *layout;
 
@@ -83,7 +89,7 @@ typedef struct {
     char    log_decode_fail[8][512];
 } S3MenuScene;
 
-/* 渲染 root 窗口到画布（不清屏，调用方自备底色）。返回贴图次数。 */
+/* 渲染场景到画布（每次调用 = 一整帧：开头自动清空画布）。返回贴图次数。 */
 int32_t s3_menu_render(S3MenuScene *ms, Sango3Canvas *cv);
 
 const char *s3_menu_state_name(int state);

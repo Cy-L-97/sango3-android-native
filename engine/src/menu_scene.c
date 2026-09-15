@@ -159,7 +159,8 @@ static int draw_asset(S3MenuScene *ms, Sango3Canvas *cv, const char *path,
 }
 
 /* ---------------------------------------------------------------- 渲染 */
-static void draw_window(S3MenuScene *ms, Sango3Canvas *cv, uint32_t id, int depth) {
+static void draw_window(S3MenuScene *ms, Sango3Canvas *cv, uint32_t id,
+                        int depth, int icon_only) {
     if (depth > 16) return;
     const S3UiWindow *w = s3_ui_window(ms->layout, id);
     if (!w) return;
@@ -188,7 +189,7 @@ static void draw_window(S3MenuScene *ms, Sango3Canvas *cv, uint32_t id, int dept
         }
     }
 
-    if (has_text && ms->draw_text) {
+    if (has_text && ms->draw_text && !icon_only) {
         uint32_t rgb = 0xFFFFFF;
         if (w->fcolor >= 0) {
             const S3UiColor *co = s3_ui_color(ms->layout, (uint32_t)w->fcolor);
@@ -204,8 +205,10 @@ static void draw_window(S3MenuScene *ms, Sango3Canvas *cv, uint32_t id, int dept
         ++ms->n_text;
     }
 
+    if (icon_only) return;   /* 仅背景模式：不递归子控件（不带按钮/文本） */
+
     for (uint32_t k = 0; k < w->child_count; ++k)
-        draw_window(ms, cv, w->child_ids[k], depth + 1);
+        draw_window(ms, cv, w->child_ids[k], depth + 1, 0);
 }
 
 int32_t s3_menu_render(S3MenuScene *ms, Sango3Canvas *cv) {
@@ -218,11 +221,14 @@ int32_t s3_menu_render(S3MenuScene *ms, Sango3Canvas *cv) {
      * 同一块画布 —— 不清屏的话，上一个场景的像素会全部残留（2026-09-15 实测踩坑）。 */
     sango3_canvas_fill(cv, 0, 0, cv->w, cv->h, 0, 0, 0);
     if (ms->roots && ms->n_roots > 0) {
-        for (int i = 0; i < ms->n_roots; ++i)      /* 数组顺序 = 叠加顺序 */
-            draw_window(ms, cv, ms->roots[i], 0);
+        for (int i = 0; i < ms->n_roots; ++i) {    /* 数组顺序 = 叠加顺序 */
+            uint32_t raw = ms->roots[i];
+            draw_window(ms, cv, S3_MENU_ROOT_ID(raw), 0,
+                        (raw & S3_MENU_ROOT_ICON_ONLY) ? 1 : 0);
+        }
     } else {
         if (ms->root_id <= 0) ms->root_id = 1;
-        draw_window(ms, cv, (uint32_t)ms->root_id, 0);
+        draw_window(ms, cv, (uint32_t)ms->root_id, 0, 0);
     }
     return ms->n_drawn;
 }
@@ -255,7 +261,8 @@ uint32_t s3_menu_hit_test_multi(const S3UiLayout *L,
                                 int32_t lx, int32_t ly) {
     if (!L || !roots) return 0;
     for (int i = n_roots - 1; i >= 0; --i) {   /* 后面的窗口在上，优先命中 */
-        uint32_t h = hit_rec(L, roots[i], lx, ly);
+        if (roots[i] & S3_MENU_ROOT_ICON_ONLY) continue;   /* 背景不可交互 */
+        uint32_t h = hit_rec(L, S3_MENU_ROOT_ID(roots[i]), lx, ly);
         if (h) return h;
     }
     return 0;

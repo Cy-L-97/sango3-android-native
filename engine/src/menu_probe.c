@@ -212,7 +212,12 @@ int main(int argc, char **argv) {
             char *end = NULL;
             long v = strtol(p, &end, 10);
             if (end == p) break;
-            if (v > 0) roots_buf[n_roots++] = (uint32_t)v;
+            if (v != 0) {
+                /* 负数 = 仅背景 icon（S3_MENU_ROOT_ICON_ONLY），如 "-1" 借主菜单背景不带按钮 */
+                uint32_t id = (uint32_t)(v < 0 ? -v : v);
+                if (v < 0) id |= S3_MENU_ROOT_ICON_ONLY;
+                roots_buf[n_roots++] = id;
+            }
             p = end;
             while (*p == ',' || *p == ' ') ++p;
         }
