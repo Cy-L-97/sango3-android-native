@@ -159,11 +159,16 @@ static int draw_asset(S3MenuScene *ms, Sango3Canvas *cv, const char *path,
 }
 
 /* ---------------------------------------------------------------- 渲染 */
+/* ox,oy = 父窗口链累计的绝对偏移。INI 里**子窗口的 Range 是相对父窗口**的
+ * （实测：410 列表的表头子按钮 (10,6)/(83,6)... 以金框 501 宽为界自洽递增，
+ *  按绝对渲染会整体左上错位 129,9 并与左上角页签重叠 —— 2026-09-15 用户实测发现）。
+ * 窗口绝对位置 = ox + Range.xy；icon 贴图 = 窗口绝对位置 + Icon.Pos.xy。 */
 static void draw_window(S3MenuScene *ms, Sango3Canvas *cv, uint32_t id,
-                        int depth, int icon_only) {
+                        int depth, int icon_only, int32_t ox, int32_t oy) {
     if (depth > 16) return;
     const S3UiWindow *w = s3_ui_window(ms->layout, id);
     if (!w) return;
+    const int32_t ax = ox + w->range.x, ay = oy + w->range.y;
 
     int has_icon = ((w->style & S3_WS_ICON) && w->icon_id >= 0);
     int has_text = ((w->style & S3_WS_TEXT) && w->title && *w->title);
@@ -183,7 +188,7 @@ static void draw_window(S3MenuScene *ms, Sango3Canvas *cv, uint32_t id,
                 char path[600];
                 build_asset_path(path, sizeof path, ic->dir, name);
                 if (draw_asset(ms, cv, path,
-                               w->range.x + ic->pos_x, w->range.y + ic->pos_y) == 1)
+                               ax + ic->pos_x, ay + ic->pos_y) == 1)
                     ++ms->n_drawn;
             }
         }
@@ -200,7 +205,7 @@ static void draw_window(S3MenuScene *ms, Sango3Canvas *cv, uint32_t id,
             }
         }
         ms->draw_text(ms->text_ud, cv, w->title,
-                      w->range.x, w->range.y, w->range.w, w->range.h,
+                      ax, ay, w->range.w, w->range.h,
                       rgb, w->font, w->style);
         ++ms->n_text;
     }
@@ -208,7 +213,7 @@ static void draw_window(S3MenuScene *ms, Sango3Canvas *cv, uint32_t id,
     if (icon_only) return;   /* 仅背景模式：不递归子控件（不带按钮/文本） */
 
     for (uint32_t k = 0; k < w->child_count; ++k)
-        draw_window(ms, cv, w->child_ids[k], depth + 1, 0);
+        draw_window(ms, cv, w->child_ids[k], depth + 1, 0, ax, ay);
 }
 
 int32_t s3_menu_render(S3MenuScene *ms, Sango3Canvas *cv) {
@@ -224,27 +229,33 @@ int32_t s3_menu_render(S3MenuScene *ms, Sango3Canvas *cv) {
         for (int i = 0; i < ms->n_roots; ++i) {    /* 数组顺序 = 叠加顺序 */
             uint32_t raw = ms->roots[i];
             draw_window(ms, cv, S3_MENU_ROOT_ID(raw), 0,
-                        (raw & S3_MENU_ROOT_ICON_ONLY) ? 1 : 0);
+                        (raw & S3_MENU_ROOT_ICON_ONLY) ? 1 : 0, 0, 0);
         }
     } else {
         if (ms->root_id <= 0) ms->root_id = 1;
-        draw_window(ms, cv, (uint32_t)ms->root_id, 0, 0);
+        /* 单 root 模式：画布尺寸即该窗口 → 把 root 平移到 (0,0) */
+        const S3UiWindow *rw = s3_ui_window(ms->layout, (uint32_t)ms->root_id);
+        draw_window(ms, cv, (uint32_t)ms->root_id, 0, 0,
+                    rw ? -rw->range.x : 0, rw ? -rw->range.y : 0);
     }
     return ms->n_drawn;
 }
 
 /* ---------------------------------------------------------------- 命中测试 */
-static uint32_t hit_rec(const S3UiLayout *L, uint32_t id, int32_t lx, int32_t ly) {
+/* 命中测试：与 draw_window 同一套父偏移语义（子 Range 相对父）。 */
+static uint32_t hit_rec(const S3UiLayout *L, uint32_t id,
+                        int32_t lx, int32_t ly, int32_t ox, int32_t oy) {
     const S3UiWindow *w = s3_ui_window(L, id);
     if (!w) return 0;
+    const int32_t ax = ox + w->range.x, ay = oy + w->range.y;
     /* 子在上（后画的优先），从后往前测 */
     for (int k = (int)w->child_count - 1; k >= 0; --k) {
-        uint32_t h = hit_rec(L, w->child_ids[k], lx, ly);
+        uint32_t h = hit_rec(L, w->child_ids[k], lx, ly, ax, ay);
         if (h) return h;
     }
     if (w->range.w > 0 && w->range.h > 0 &&
-        lx >= w->range.x && lx < w->range.x + w->range.w &&
-        ly >= w->range.y && ly < w->range.y + w->range.h)
+        lx >= ax && lx < ax + w->range.w &&
+        ly >= ay && ly < ay + w->range.h)
         return w->id;
     return 0;
 }
@@ -253,7 +264,7 @@ uint32_t s3_menu_hit_test(const S3UiLayout *L, uint32_t root_id,
                           int32_t lx, int32_t ly) {
     if (!L) return 0;
     if (root_id == 0) root_id = 1;
-    return hit_rec(L, root_id, lx, ly);
+    return hit_rec(L, root_id, lx, ly, 0, 0);
 }
 
 uint32_t s3_menu_hit_test_multi(const S3UiLayout *L,
@@ -262,7 +273,7 @@ uint32_t s3_menu_hit_test_multi(const S3UiLayout *L,
     if (!L || !roots) return 0;
     for (int i = n_roots - 1; i >= 0; --i) {   /* 后面的窗口在上，优先命中 */
         if (roots[i] & S3_MENU_ROOT_ICON_ONLY) continue;   /* 背景不可交互 */
-        uint32_t h = hit_rec(L, S3_MENU_ROOT_ID(roots[i]), lx, ly);
+        uint32_t h = hit_rec(L, S3_MENU_ROOT_ID(roots[i]), lx, ly, 0, 0);
         if (h) return h;
     }
     return 0;
