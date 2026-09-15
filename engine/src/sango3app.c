@@ -249,6 +249,12 @@ int main(int argc, char **argv) {
     if (n_paks == 0) { fprintf(stderr, "no pak given\n"); return 2; }
 #endif
 
+#ifdef SANGO3_ANDROID
+    /* 拦截系统返回键：Back 不再直接退出应用，而是作为 SDL_AC_BACK 键盘事件
+     * 交给引擎（presenter 把它转成"右键返回"边沿）。必须在窗口创建前设置。 */
+    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
+#endif
+
     if (s3_text_init(enc_dir) != 0 || !s3_text_ready()) {
         fprintf(stderr, "text_init failed (encoding dir: %s)\n", enc_dir);
         ALOG("text_init failed: %s", enc_dir);
@@ -358,11 +364,13 @@ int main(int argc, char **argv) {
     ms.state_ud   = &app;
     if (fc.ready) { ms.draw_text = draw_text_cb; ms.text_ud = &fc; }
 
+    int32_t crx = 0, cry = 0, crw = 0, crh = 0;
+    sango3_presenter_content_rect(p, &crx, &cry, &crw, &crh);
     printf("OK app started: roots=%d canvas=%dx%d out=%dx%d (ESC/close=quit, RMB=back)\n",
            app.n_roots, cw, ch, out_w, out_h);
-    ALOG("app started: roots=%d canvas=%dx%d out=%dx%d", app.n_roots, cw, ch, out_w, out_h);
+    ALOG("app started: roots=%d canvas=%dx%d out=%dx%d content=%d,%d %dx%d",
+         app.n_roots, cw, ch, out_w, out_h, crx, cry, crw, crh);
 
-    int prev_down = 0;
     uint32_t drawn = 0;
     for (;;) {
         ms.roots = app.roots;
@@ -382,9 +390,19 @@ int main(int argc, char **argv) {
                      : 0;
         app.hover = hit;
 
-        if (pt.ldown && !prev_down) app.press = hit;
-        if (!pt.ldown && prev_down) {
-            if (app.press && app.press == hit) {
+        /* 按下：本帧有按下边沿 → 记录按压目标。
+         * 抬起：只要当前无按压且 press 有记录就判定触发。
+         * （不能依赖 prev_down 电平判定抬起 —— 快速点按的 down/up 可能落在同一帧，
+         *   用电平判定会整次丢失点击。2026-09-15 实测踩坑。） */
+        /* 按下边沿即记录按压目标：同帧 down+up 时 ldown 已被 UP 事件清零，
+         * 不能再要求 ldown==1（否则快速点按整次丢失，2026-09-15 实测踩坑）。
+         * 抬起判定：无按压 + 有记录 → 触发；按住拖出控件后抬起 hit 变化 → 不触发。 */
+        if (pt.lclick || pt.rclick)
+            ALOG("input: lclick=%d rclick=%d at %.0f,%.0f (inside=%d)",
+                 pt.lclick, pt.rclick, pt.lx, pt.ly, pt.inside);
+        if (pt.lclick) app.press = hit;
+        if (!pt.ldown && app.press) {
+            if (app.press == hit) {
                 const S3UiWindow *w = s3_ui_window(&L, app.press);
                 int32_t cmd = w ? w->command : -1;
                 if (cmd == 6) { printf("command=6 (quit)\n"); break; }
@@ -395,13 +413,14 @@ int main(int argc, char **argv) {
                     app.n_roots = next.n;
                     app.hover = app.press = 0;
                     printf("scene -> %d roots (from cmd=%d)\n", app.n_roots, cmd);
+                    ALOG("scene -> %d roots (cmd=%d)", app.n_roots, cmd);
                 } else if (cmd >= 0) {
                     printf("click id=%u cmd=%d (no scene mapping yet)\n", app.press, cmd);
+                    ALOG("click id=%u cmd=%d (no mapping)", app.press, cmd);
                 }
             }
             app.press = 0;
         }
-        prev_down = pt.ldown;
 
         if (pt.rclick && app.sp > 0) {
             --app.sp;
@@ -409,6 +428,7 @@ int main(int argc, char **argv) {
             app.n_roots = app.stack[app.sp].n;
             app.hover = app.press = 0;
             printf("scene <- %d roots (back)\n", app.n_roots);
+            ALOG("scene <- back to %d roots", app.n_roots);
         }
 
         SDL_Delay(16);

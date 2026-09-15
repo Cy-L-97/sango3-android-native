@@ -297,7 +297,12 @@ def main():
     print("=== done in %.1fs ===" % (time.time() - t0))
     print("APK:", signed)
     if "--install" in sys.argv:
-        run([adb_path(), "install", "-r", signed])
+        # ⚠ 雷电模拟器上 `adb install -r` 会卡死（2026-09-15 实测，300s 无响应）；
+        # 改用 push + pm install，秒级完成且效果相同。
+        adb = adb_path()
+        tmp_apk = "/data/local/tmp/sango3.apk"
+        run([adb, "push", signed, tmp_apk])
+        run([adb, "shell", "pm", "install", "-r", tmp_apk])
     if "--push-assets" in sys.argv:
         push_assets()
     return 0

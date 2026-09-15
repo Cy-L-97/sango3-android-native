@@ -161,6 +161,11 @@ int sango3_presenter_frame(Sango3Presenter *p, uint32_t *out_drawn) {
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) quit = 1;
         else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) quit = 1;
+        else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_AC_BACK) {
+            /* Android 返回键：当作"右键返回"的按下边沿交给应用（不退出）。
+             * 系统默认行为（Back 退出 Activity）已由 SDL_HINT_ANDROID_TRAP_BACK_BUTTON 拦截。 */
+            p->ptr_rclick = 1;
+        }
         else if (e.type == SDL_WINDOWEVENT &&
                  e.window.event == SDL_WINDOWEVENT_RESIZED) {
             /* 拖动缩放：读取新窗口尺寸并重算内容矩形 */

@@ -213,6 +213,10 @@ int32_t s3_menu_render(S3MenuScene *ms, Sango3Canvas *cv) {
     ms->n_drawn = ms->n_icon_missing = ms->n_asset_missing = 0;
     ms->n_decode_fail = ms->n_text = ms->n_containers = 0;
     if (!ms->layout || !cv) return 0;
+    /* 每次渲染 = 一整帧：先清空画布。
+     * 场景往往不是全屏覆盖（如登錄武將只有面板 + 列表框架），交互主程序又复用
+     * 同一块画布 —— 不清屏的话，上一个场景的像素会全部残留（2026-09-15 实测踩坑）。 */
+    sango3_canvas_fill(cv, 0, 0, cv->w, cv->h, 0, 0, 0);
     if (ms->roots && ms->n_roots > 0) {
         for (int i = 0; i < ms->n_roots; ++i)      /* 数组顺序 = 叠加顺序 */
             draw_window(ms, cv, ms->roots[i], 0);
