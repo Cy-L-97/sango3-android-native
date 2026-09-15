@@ -14,7 +14,8 @@
 
 typedef struct {
     char    name[32];
-    int32_t mx, my;      /* 地图像素坐标（1024×768 空间） */
+    int32_t mx, my;      /* 城池图标中心的地图像素坐标（1024×768 空间） */
+    int32_t mw, mh;      /* 图标尺寸（地图像素） */
     int     mine;
 } StratCity;
 
@@ -75,11 +76,14 @@ void s3_strategy_clear_cities(S3Strategy *s) {
 }
 
 void s3_strategy_add_city(S3Strategy *s, const char *name,
-                          int32_t mx, int32_t my, int mine) {
+                          int32_t mx, int32_t my, int32_t mw, int32_t mh, int mine) {
     if (!s || !name || s->n_cities >= S3_STRAT_MAX_CITIES) return;
     StratCity *c = &s->city[s->n_cities++];
     snprintf(c->name, sizeof c->name, "%s", name);
-    c->mx = mx; c->my = my; c->mine = mine;
+    c->mx = mx; c->my = my;
+    c->mw = mw > 0 ? mw : 24;
+    c->mh = mh > 0 ? mh : 19;
+    c->mine = mine;
 }
 
 /* 地图坐标 → 逻辑坐标（等比例铺满画布） */
@@ -123,18 +127,26 @@ void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
         }
     }
 
-    /* 城市标记：己方金色方框；选中红框。其余城不额外标记 —— 地图整图自带城池图标。 */
+    /* 城市标记：己方金色框；选中红框。其余城不额外标记 —— 地图整图自带城池图标。
+     * 框大小按该城图标尺寸等比换算（大城/中城/小城/关卡尺寸不同）。 */
+    int32_t mw = s->map_ok ? s->map.width : 1024;
+    int32_t mh = s->map_ok ? s->map.height : 768;
     for (int i = 0; i < s->n_cities; ++i) {
         int sel = (i == s->sel);
         int mine = s->city[i].mine;
         if (!sel && !mine) continue;
         int32_t lx, ly;
         map_to_logical(s, cv, s->city[i].mx, s->city[i].my, &lx, &ly);
+        int32_t hw = (int32_t)((int64_t)s->city[i].mw * cv->w / mw / 2) + 3;
+        int32_t hh = (int32_t)((int64_t)s->city[i].mh * cv->h / mh / 2) + 3;
+        if (hw < 6) hw = 6;
+        if (hh < 6) hh = 6;
         if (sel) {
-            sango3_canvas_frame(cv, lx - 8, ly - 8, 16, 16, 2, 255, 60, 60);
-            sango3_canvas_frame(cv, lx - 10, ly - 10, 20, 20, 1, 255, 200, 120);
+            sango3_canvas_frame(cv, lx - hw, ly - hh, hw * 2, hh * 2, 2, 255, 60, 60);
+            sango3_canvas_frame(cv, lx - hw - 2, ly - hh - 2, (hw + 2) * 2, (hh + 2) * 2,
+                                1, 255, 200, 120);
         } else {
-            sango3_canvas_frame(cv, lx - 6, ly - 6, 12, 12, 2, 255, 214, 90);
+            sango3_canvas_frame(cv, lx - hw, ly - hh, hw * 2, hh * 2, 2, 255, 214, 90);
         }
     }
 
@@ -160,12 +172,14 @@ void s3_strategy_on_click(S3Strategy *s, int32_t lx, int32_t ly) {
     int32_t ch = s->cv_h > 0 ? s->cv_h : 480;
     int32_t hit = -1, best_d = 0;
     for (int i = 0; i < s->n_cities; ++i) {
-        /* 城市在地图坐标 → 画布坐标（与 render 同一套变换）；命中半径放宽到 14px */
+        /* 城市中心 → 画布坐标（与 render 同一套变换）；命中半径按图标尺寸 + 余量 */
         int32_t ox = (int32_t)((int64_t)s->city[i].mx * cw / mw) - s->off_x;
         int32_t oy = (int32_t)((int64_t)s->city[i].my * ch / mh) - s->off_y;
+        int32_t r  = (int32_t)((int64_t)s->city[i].mw * cw / mw / 2) + 6;
+        if (r < 10) r = 10;
         int32_t dx = lx - ox, dy = ly - oy;
         int32_t d = dx * dx + dy * dy;
-        if (d <= 14 * 14 && (hit < 0 || d < best_d)) { hit = i; best_d = d; }
+        if (d <= r * r && (hit < 0 || d < best_d)) { hit = i; best_d = d; }
     }
     if (hit >= 0) s->sel = hit;
 }

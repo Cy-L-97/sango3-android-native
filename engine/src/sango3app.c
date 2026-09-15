@@ -278,7 +278,9 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
         int is_mine = 0;
         for (int k = 0; k < n_mine; ++k)
             if (!strcmp(mine[k], nm)) { is_mine = 1; break; }
-        s3_strategy_add_city(st, nm, x, y, is_mine);
+        /* ⚠ Range 是城市按钮**矩形的左上角**（如 襄平 = 823,44,24,19），
+         * 城池图标中心要加半个宽高 —— 否则标记/命中都偏到左上角（用户实测发现）。 */
+        s3_strategy_add_city(st, nm, x + w / 2, y + h / 2, w, h, is_mine);
         ++n;
     }
     s3_ini_free(ini);

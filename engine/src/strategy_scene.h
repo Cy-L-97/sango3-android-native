@@ -35,9 +35,10 @@ void        s3_strategy_free(S3Strategy *s);
 /* 载入地图整图（pak 路径，如 "Shape\\AD\\Base\\Map.shp"）。返回 0 成功。 */
 int  s3_strategy_set_map(S3Strategy *s, const char *pak_path);
 void s3_strategy_clear_cities(S3Strategy *s);
-/* mine: 1 = 己方城池（金色框）；selected_cap: 1 = 可被点击选中 */
+/* mine: 1 = 己方城池（金色框）
+ * mx,my = 城池图标**中心**的地图像素坐标；mw,mh = 图标尺寸（用于标记与命中） */
 void s3_strategy_add_city(S3Strategy *s, const char *name,
-                          int32_t mx, int32_t my, int mine);
+                          int32_t mx, int32_t my, int32_t mw, int32_t mh, int mine);
 
 void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv);
 /* 逻辑坐标点击：命中某城则选中它（命中范围按地图缩放后的城市图标大小放宽） */
