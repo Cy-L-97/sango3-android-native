@@ -198,7 +198,7 @@ int main(int argc, char **argv) {
     int32_t  scene_sel = 0;                  /* 0 = 主菜单 */
     const char *preset = NULL;               /* --preset 指定起始场景 */
     int32_t  out_w    = 1280, out_h = 960;   /* 2× 逻辑，整数倍最清晰 */
-    Sango3Aspect aspect = SANGO3_ASPECT_PILLARBOX;
+    Sango3Aspect aspect = SANGO3_ASPECT_EXTEND;   /* 默认 EXTEND：长屏不留黑边 */
     Sango3Filter filter = SANGO3_FILTER_NEAREST;
     uint32_t frames   = 0;
     int      selftest = 0;
@@ -239,7 +239,10 @@ int main(int argc, char **argv) {
             continue;
         }
         if (!strcmp(argv[i], "--aspect") && i + 1 < argc) {
-            if (!strcmp(argv[++i], "stretch")) aspect = SANGO3_ASPECT_STRETCH;
+            const char *a = argv[++i];
+            if      (!strcmp(a, "stretch")) aspect = SANGO3_ASPECT_STRETCH;
+            else if (!strcmp(a, "extend"))  aspect = SANGO3_ASPECT_EXTEND;
+            else if (!strcmp(a, "pillarbox")) aspect = SANGO3_ASPECT_PILLARBOX;
             continue;
         }
         if (!strcmp(argv[i], "--filter") && i + 1 < argc) {

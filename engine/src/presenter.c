@@ -29,10 +29,67 @@ struct Sango3Presenter {
     int           ptr_lclick, ptr_rclick;
 };
 
-/* 按当前窗口尺寸重算内容矩形（pillarbox 居中 / stretch 铺满）。 */
+/* 按当前窗口尺寸重算内容矩形。
+ * EXTEND：内容按**长边**撑满（不留黑边、不变形），余下两侧由 frame() 用
+ *   画布边缘条带拉伸填充；UI 仍锚定 4:3 安全区，命中判定不受影响。
+ * 其他（pillarbox / stretch）：沿用 render.c 的视口数学。 */
 static void recompute_rect(Sango3Presenter *p) {
+    if (p->aspect == SANGO3_ASPECT_EXTEND) {
+        float sr = (float)p->out_w / (float)p->out_h;          /* 屏幕比例 */
+        float lr = (float)p->logical_w / (float)p->logical_h;  /* 逻辑比例 4:3 */
+        float scale;
+        if (sr >= lr) {                    /* 屏幕更宽（横屏）→ 按高度撑满 */
+            scale = (float)p->out_h / (float)p->logical_h;
+            p->vp.dst_w = (int32_t)(p->logical_w * scale + 0.5f);
+            p->vp.dst_h = (int32_t)(p->logical_h * scale + 0.5f);
+            p->vp.dst_x = (p->out_w - p->vp.dst_w) / 2;
+            p->vp.dst_y = 0;
+        } else {                           /* 屏幕更窄（竖屏）→ 按宽度撑满 */
+            scale = (float)p->out_w / (float)p->logical_w;
+            p->vp.dst_w = (int32_t)(p->logical_w * scale + 0.5f);
+            p->vp.dst_h = (int32_t)(p->logical_h * scale + 0.5f);
+            p->vp.dst_x = 0;
+            p->vp.dst_y = (p->out_h - p->vp.dst_h) / 2;
+        }
+        p->vp.logical_w = p->logical_w;
+        p->vp.logical_h = p->logical_h;
+        p->vp.out_w = p->out_w;
+        p->vp.out_h = p->out_h;
+        p->vp.aspect = p->aspect;
+        p->vp.filter = p->filter;
+        p->vp.scale = scale;
+        return;
+    }
     sango3_viewport_init(&p->vp, p->logical_w, p->logical_h,
                          p->out_w, p->out_h, p->aspect, p->filter);
+}
+
+/* EXTEND：把内容矩形之外的区域用画布**边缘条带**拉伸填满。
+ * 取 1 列会退化成纯色块，故取较宽的条带（默认 48 逻辑列）保留纹理细节。
+ * 对侧一律用"近端条带镜像"填充：内容区边缘可能带 UI 文字（如右下 V2.2C），
+ * 直接拉伸会出残影；镜像左/上条带则永远干净，星空类背景对称无妨。 */
+#define S3_EXTEND_BAND 48
+
+static void draw_extend_bands(Sango3Presenter *p) {
+    int band = S3_EXTEND_BAND;
+    if (band > p->logical_w / 2) band = p->logical_w / 2;
+    if (p->vp.dst_x > 0) {                    /* 横屏：左右两侧 */
+        SDL_Rect sl = { 0, 0, band, p->logical_h };
+        SDL_Rect dl = { 0, 0, p->vp.dst_x, p->out_h };
+        int rw = p->out_w - p->vp.dst_x - p->vp.dst_w;   /* 取整余量 */
+        SDL_Rect dr = { p->vp.dst_x + p->vp.dst_w, 0,
+                        rw > 0 ? rw : p->vp.dst_x, p->out_h };
+        SDL_RenderCopy(p->ren, p->tex, &sl, &dl);
+        SDL_RenderCopyEx(p->ren, p->tex, &sl, &dr, 0, NULL, SDL_FLIP_HORIZONTAL);
+    } else if (p->vp.dst_y > 0) {             /* 竖屏：上下两侧 */
+        SDL_Rect st = { 0, 0, p->logical_w, band };
+        SDL_Rect dt = { 0, 0, p->out_w, p->vp.dst_y };
+        int bh = p->out_h - p->vp.dst_y - p->vp.dst_h;
+        SDL_Rect db = { 0, p->vp.dst_y + p->vp.dst_h, p->out_w,
+                        bh > 0 ? bh : p->vp.dst_y };
+        SDL_RenderCopy(p->ren, p->tex, &st, &dt);
+        SDL_RenderCopyEx(p->ren, p->tex, &st, &db, 0, NULL, SDL_FLIP_VERTICAL);
+    }
 }
 
 /* 物理鼠标坐标 → 逻辑坐标，并更新 inside。 */
@@ -191,6 +248,8 @@ int sango3_presenter_frame(Sango3Presenter *p, uint32_t *out_drawn) {
 
     SDL_SetRenderDrawColor(p->ren, 0, 0, 0, 255);
     SDL_RenderClear(p->ren);
+
+    if (p->aspect == SANGO3_ASPECT_EXTEND) draw_extend_bands(p);
 
     SDL_Rect dst = { p->vp.dst_x, p->vp.dst_y, p->vp.dst_w, p->vp.dst_h };
     if (SDL_RenderCopy(p->ren, p->tex, NULL, &dst) != 0) {
