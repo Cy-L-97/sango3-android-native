@@ -17,6 +17,8 @@ typedef struct {
     int32_t mx, my;      /* 城池图标中心的地图像素坐标（1024×768 空间） */
     int32_t mw, mh;      /* 图标尺寸（地图像素） */
     int     mine;
+    S3CityDetail det;    /* 面板九行数据 */
+    int     has_detail;
 } StratCity;
 
 struct S3Strategy {
@@ -27,6 +29,16 @@ struct S3Strategy {
     int      map_ok;
     char     map_path[128];
 
+    ShpImage panel;              /* 城池信息面板底图（CityInfo.shp，标签烘焙在图内） */
+    int      panel_ok;
+    char     panel_path[128];
+    int32_t  panel_zoom;         /* 1 = 原版尺寸；高清画布下用 2 才看得清 */
+    char     my_lord[32];        /* 我方君主（信息条文案用） */
+
+    ShpImage court;              /* 朝堂背景（AD\Background\BG001~003，640×480） */
+    int      court_ok;
+    int      is_court;           /* 1 = 朝堂视图（内政阶段） */
+
     StratCity city[S3_STRAT_MAX_CITIES];
     int       n_cities;
     int       sel;               /* 选中城市下标，-1 = 无 */
@@ -36,7 +48,11 @@ struct S3Strategy {
     /* 视口（地图坐标）：画布只显示这一块，拖动改变 vp_x/vp_y */
     int32_t   vp_x, vp_y, vp_w, vp_h;
     int       vp_set;
+    int       month;               /* 当前月份（朝堂信息条显示；確定 = 结束本月） */
+    char      banner[128];         /* 信息条临时文案（命令阶段引导），空 = 默认 */
 };
+
+static void draw_hud(S3Strategy *s, Sango3Canvas *cv);
 
 S3Strategy *s3_strategy_new(S3StratReadAsset read_asset, void *asset_ud,
                             S3StratDrawText draw_text, void *text_ud) {
@@ -45,13 +61,50 @@ S3Strategy *s3_strategy_new(S3StratReadAsset read_asset, void *asset_ud,
     s->read_asset = read_asset; s->asset_ud = asset_ud;
     s->draw_text = draw_text;   s->text_ud = text_ud;
     s->sel = -1;
+    s->panel_zoom = 2;           /* 战略层画布 = 地图原生 1024×768 → 一档放大 */
     return s;
 }
 
 void s3_strategy_free(S3Strategy *s) {
     if (!s) return;
-    if (s->map_ok) shp_free(&s->map);
+    if (s->map_ok)   shp_free(&s->map);
+    if (s->panel_ok) shp_free(&s->panel);
+    if (s->court_ok) shp_free(&s->court);
     free(s);
+}
+
+void s3_strategy_set_view(S3Strategy *s, int court) { if (s) s->is_court = court ? 1 : 0; }
+int  s3_strategy_court(const S3Strategy *s) { return s ? s->is_court : 0; }
+
+int s3_strategy_set_court_bg(S3Strategy *s, const char *pak_path) {
+    if (!s || !pak_path) return -1;
+    if (s->court_ok) shp_free(&s->court);
+    s->court_ok = 0;
+    uint32_t len = 0;
+    uint8_t *raw = s->read_asset ? s->read_asset(s->asset_ud, pak_path, &len) : NULL;
+    if (!raw) return -2;
+    const char *err = NULL;
+    int ok = shp_decode(raw, len, &s->court, &err);
+    free(raw);
+    if (!ok) {
+        printf("WARN : court bg decode failed: %s (%s)\n", pak_path, err ? err : "?");
+        return -3;
+    }
+    s->court_ok = 1;
+    printf("court bg ok: %s %ux%u\n", pak_path, (unsigned)s->court.width, (unsigned)s->court.height);
+    return 0;
+}
+
+void s3_strategy_select(S3Strategy *s, int idx) {
+    if (!s) return;
+    if (idx >= 0 && idx < s->n_cities) s->sel = idx;
+}
+
+void s3_strategy_set_month(S3Strategy *s, int month) { if (s) s->month = month; }
+int  s3_strategy_month(const S3Strategy *s) { return s ? s->month : 0; }
+
+void s3_strategy_set_banner(S3Strategy *s, const char *text) {
+    if (s) snprintf(s->banner, sizeof s->banner, "%s", text ? text : "");
 }
 
 int s3_strategy_set_map(S3Strategy *s, const char *pak_path) {
@@ -135,6 +188,61 @@ void s3_strategy_add_city(S3Strategy *s, const char *name,
     c->mine = mine;
 }
 
+void s3_strategy_set_city_detail(S3Strategy *s, int idx, const S3CityDetail *d) {
+    if (!s || idx < 0 || idx >= s->n_cities) return;
+    if (!d) { s->city[idx].has_detail = 0; return; }
+    StratCity *c = &s->city[idx];
+    c->det = *d;                     /* 定长数组整体拷贝，无悬垂指针 */
+    c->det.lord[sizeof c->det.lord - 1] = '\0';
+    c->det.adviser[sizeof c->det.adviser - 1] = '\0';
+    c->has_detail = 1;
+}
+
+void s3_strategy_set_panel_zoom(S3Strategy *s, int32_t zoom) {
+    if (s && zoom >= 1 && zoom <= 4) s->panel_zoom = zoom;
+}
+
+void s3_strategy_set_my_lord(S3Strategy *s, const char *lord) {
+    if (!s) return;
+    snprintf(s->my_lord, sizeof s->my_lord, "%s", lord ? lord : "");
+}
+
+int s3_strategy_set_panel(S3Strategy *s, const char *pak_path) {
+    if (!s || !pak_path) return -1;
+    if (s->panel_ok && strcmp(s->panel_path, pak_path) == 0) return 0;
+    if (s->panel_ok) { shp_free(&s->panel); s->panel_ok = 0; }
+
+    uint32_t len = 0;
+    uint8_t *raw = s->read_asset ? s->read_asset(s->asset_ud, pak_path, &len) : NULL;
+    if (!raw) return -2;
+    const char *err = NULL;
+    int ok = shp_decode(raw, len, &s->panel, &err);
+    free(raw);
+    if (!ok) {
+        printf("WARN : city panel decode failed: %s (%s)\n", pak_path, err ? err : "?");
+        return -3;
+    }
+    s->panel_ok = 1;
+    snprintf(s->panel_path, sizeof s->panel_path, "%s", pak_path);
+    printf("panel ok: %s %ux%u\n", pak_path, (unsigned)s->panel.width, (unsigned)s->panel.height);
+    return 0;
+}
+
+/* 千分位整数（人口/金钱这类数值用；缓冲需 >= 16 字节） */
+static void fmt_thousands(int32_t v, char *out, int cap) {
+    char tmp[16];
+    int  n = 0;
+    unsigned int u = (v < 0) ? (unsigned)(-v) : (unsigned)v;
+    do { tmp[n++] = (char)('0' + (u % 10)); u /= 10; } while (u && n < (int)sizeof tmp);
+    int o = 0;
+    if (v < 0 && o < cap - 1) out[o++] = '-';
+    for (int i = n - 1; i >= 0 && o < cap - 1; --i) {
+        out[o++] = tmp[i];
+        if (i > 0 && i % 3 == 0 && o < cap - 1) out[o++] = ',';
+    }
+    out[o] = '\0';
+}
+
 /* 地图坐标 → 逻辑坐标：先减去视口原点，再按画布/视口比例换算
  * （视口尺寸 == 画布尺寸时即为 1:1，零缩放） */
 static int mine_count(const S3Strategy *s) {
@@ -151,10 +259,49 @@ static void map_to_logical(const S3Strategy *s, Sango3Canvas *cv,
     *ly = (int32_t)((int64_t)(my - s->vp_y) * cv->h / vh);
 }
 
+/* 城池信息面板在画布上的矩形（坐标空间 = 调用时的画布）。返回 0 = 当前无面板。
+ * render 与 on_click 共用同一套布局，避免两处算法漂移。 */
+static int panel_rect(const S3Strategy *s, int32_t cw, int32_t ch,
+                      int32_t *px, int32_t *py, int32_t *pw, int32_t *ph) {
+    if (!s || !s->panel_ok || s->sel < 0 || s->sel >= s->n_cities) return 0;
+    const int32_t z = s->panel_zoom > 0 ? s->panel_zoom : 1;
+    *pw = (int32_t)s->panel.width  * z;
+    *ph = (int32_t)s->panel.height * z;
+    *px = cw - *pw - 24;                       /* 右上角，右边距 24 */
+    *py = 64;                                  /* 让开顶部信息条 */
+    if (*px < 0) *px = 0;
+    if (*py + *ph > ch) *py = ch - *ph;
+    if (*py < 0) *py = 0;
+    return 1;
+}
+
 void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
     if (!s || !cv) return;
     s->cv_w = cv->w; s->cv_h = cv->h;
     sango3_canvas_fill(cv, 0, 0, cv->w, cv->h, 10, 12, 20);
+
+    /* 朝堂视图（内政阶段）：640×480 全屏 CG 铺底，不画地图/城池标记。 */
+    if (s->is_court) {
+        if (s->court_ok) {
+            int32_t bw = (int32_t)s->court.width, bh = (int32_t)s->court.height;
+            if (bw == cv->w && bh == cv->h) {          /* 1:1 直拷 */
+                for (int32_t y = 0; y < cv->h; ++y)
+                    memcpy(cv->px + (size_t)y * cv->w * 4,
+                           s->court.rgba + (size_t)y * bw * 4, (size_t)bw * 4);
+            } else {                                    /* 尺寸不符 → 最近邻拉伸铺满 */
+                for (int32_t y = 0; y < cv->h; ++y) {
+                    const uint8_t *srow = s->court.rgba
+                        + (size_t)((int64_t)y * bh / cv->h) * bw * 4;
+                    uint8_t *drow = cv->px + (size_t)y * cv->w * 4;
+                    for (int32_t x = 0; x < cv->w; ++x)
+                        memcpy(drow + (size_t)x * 4,
+                               srow + (size_t)((int64_t)x * bw / cv->w) * 4, 4);
+                }
+            }
+        }
+        draw_hud(s, cv);                               /* 信息条 + 城池面板 */
+        return;
+    }
 
     /* 地图：从整图裁取视口区域；视口尺寸 == 画布尺寸时逐行 1:1 直拷（零重采样）。 */
     if (s->map_ok) {
@@ -208,25 +355,84 @@ void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
         }
     }
 
+    draw_hud(s, cv);
+}
+
+/* 信息条 + 城池信息面板（地图 / 朝堂两个视图共用） */
+static void draw_hud(S3Strategy *s, Sango3Canvas *cv) {
     /* 顶部信息条（下移 10px 避开手机状态栏）。
-     * 高分辨率画布（1024×768）下用大字档 font=3，否则相对屏幕偏小。 */
-    const int32_t bar_y = 10, bar_h = 44;
+     * 尺寸随画布自适应：高分辨率画布（1024×768 地图）用大字档 font=3 + 44px 条；
+     * 640×480（朝堂）用 16px 字 + 26px 条 —— 否则信息条占掉近 1/10 屏（用户实测）。 */
+    const int      small = (cv->w <= 640);
+    const int32_t  bar_y = 10, bar_h = small ? 26 : 44;
+    const int      bar_f = small ? 1 : 3;
     sango3_canvas_fill(cv, 0, bar_y, cv->w, bar_h, 12, 14, 24);
     sango3_canvas_frame(cv, 0, bar_y + bar_h, cv->w, 2, 1, 150, 130, 80);
     if (s->draw_text) {
-        char buf[96];
-        if (s->sel >= 0 && s->sel < s->n_cities)
+        char buf[128];
+        if (s->banner[0])
+            snprintf(buf, sizeof buf, "%s", s->banner);
+        else if (s->is_court)
+            snprintf(buf, sizeof buf, "朝堂 · 第 %d 月 —— 左侧行政主選單執行內政，「確定」結束本月",
+                     s->month);
+        else if (s->sel >= 0 && s->sel < s->n_cities)
             snprintf(buf, sizeof buf, "%s（%s）—— 拖动查看地图 / 点击其它城",
                      s->city[s->sel].name, s->city[s->sel].mine ? "我方" : "他方");
         else
             snprintf(buf, sizeof buf, "战略层：拖动查看地图 · 点击城市（%d 城，我方 %d）",
                      s->n_cities, mine_count(s));
-        s->draw_text(s->text_ud, cv, buf, 14, bar_y, cv->w - 28, bar_h, 0xF0DCA0, 3, 0x4u);
+        s->draw_text(s->text_ud, cv, buf, 14, bar_y, cv->w - 28, bar_h, 0xF0DCA0, bar_f, 0x4u);
+    }
+
+    /* ---------- 城池信息面板（原版 7400 / CityInfo.shp，标签烘焙在图内）----------
+     * 位置：视口右上角（不照搬原版 640×480 的 408,16 —— 我们跑的是地图原生分辨率
+     * 全屏 + 视口滚动，见 docs/城池信息面板与行政菜单.md 第一节注）。 */
+    if (s->sel >= 0 && s->sel < s->n_cities && s->panel_ok) {
+        const StratCity *c = &s->city[s->sel];
+        const int32_t z  = s->panel_zoom > 0 ? s->panel_zoom : 1;
+        const int   fnt  = (z >= 2) ? 2 : 1;   /* 行高 16×z：z=1 用 16px 字，z=2 用 20px 字 */
+        int32_t px = 0, py = 0, pw = 0, ph = 0;
+        panel_rect(s, cv->w, cv->h, &px, &py, &pw, &ph);
+
+        sango3_canvas_blit(cv, s->panel.rgba, (int32_t)s->panel.width,
+                           (int32_t)s->panel.height, px, py, z);
+
+        if (s->draw_text) {
+            /* 行几何取自 Menu.ini：7401..7409 的 Range 相对 7400，
+             * 行高 16 / 间距 18，值区 x=35 宽 61（左侧 0..35 是烘焙标签）。 */
+            static const int32_t row_y[9] = { 2, 20, 38, 56, 74, 92, 110, 128, 146 };
+            const int32_t vx = px + 35 * z;
+            const int32_t rw = 61 * z;
+            const int32_t rh = 16 * z;
+            char buf[64];
+            for (int r = 0; r < 9; ++r) {
+                buf[0] = '\0';
+                switch (r) {
+                case 0: snprintf(buf, sizeof buf, "%s", c->name); break;
+                case 1: snprintf(buf, sizeof buf, "%s", c->has_detail && c->det.lord[0]
+                                                       ? c->det.lord : "—"); break;
+                case 2: snprintf(buf, sizeof buf, "%s", c->has_detail && c->det.adviser[0]
+                                                       ? c->det.adviser : "—"); break;
+                case 3: if (c->has_detail) fmt_thousands(c->det.money, buf, sizeof buf); break;
+                case 4: if (c->has_detail) fmt_thousands(c->det.people, buf, sizeof buf); break;
+                case 5: if (c->has_detail) snprintf(buf, sizeof buf, "%d", c->det.dev); break;
+                case 6: if (c->has_detail) snprintf(buf, sizeof buf, "%d", c->det.n_generals); break;
+                case 7: if (c->has_detail) snprintf(buf, sizeof buf, "%d", c->det.reserve); break;
+                case 8: if (c->has_detail) snprintf(buf, sizeof buf, "%d", c->det.friendliness); break;
+                default: break;
+                }
+                if (!buf[0]) continue;
+                /* FColor 5001 = 220,220,220（值文本）；城名用金色以示区分 */
+                uint32_t rgb = (r == 0) ? 0xFFD65Au : 0xDCDCDCu;
+                s->draw_text(s->text_ud, cv, buf, vx + 4, py + row_y[r] * z, rw - 4, rh,
+                             rgb, fnt, 0x4u);
+            }
+        }
     }
 }
 
 void s3_strategy_on_click(S3Strategy *s, int32_t lx, int32_t ly) {
-    if (!s || !s->map_ok) return;
+    if (!s || !s->map_ok || s->is_court) return;   /* 朝堂无地图，不参与城市命中 */
     int32_t mw = s->map.width, mh = s->map.height;
     int32_t cw = s->cv_w > 0 ? s->cv_w : 640;
     int32_t ch = s->cv_h > 0 ? s->cv_h : 480;
@@ -243,7 +449,13 @@ void s3_strategy_on_click(S3Strategy *s, int32_t lx, int32_t ly) {
         int32_t d = dx * dx + dy * dy;
         if (d <= r * r && (hit < 0 || d < best_d)) { hit = i; best_d = d; }
     }
-    if (hit >= 0) s->sel = hit;
+    /* 点在面板上 → 维持原选择（面板是纯展示层，不参与命中） */
+    if (hit < 0) {
+        int32_t px = 0, py = 0, pw = 0, ph = 0;
+        if (panel_rect(s, cw, ch, &px, &py, &pw, &ph) &&
+            lx >= px && lx < px + pw && ly >= py && ly < py + ph) return;
+    }
+    s->sel = hit;                       /* 点空白 = 取消选择（面板随之收起） */
 }
 
 void s3_strategy_pan(S3Strategy *s, int32_t dx, int32_t dy) {
@@ -262,4 +474,12 @@ const char *s3_strategy_city_name(const S3Strategy *s, int idx) {
 }
 int s3_strategy_city_mine(const S3Strategy *s, int idx) {
     return (s && idx >= 0 && idx < s->n_cities) ? s->city[idx].mine : 0;
+}
+const S3CityDetail *s3_strategy_city_detail(const S3Strategy *s, int idx) {
+    return (s && idx >= 0 && idx < s->n_cities && s->city[idx].has_detail)
+         ? &s->city[idx].det : NULL;
+}
+S3CityDetail *s3_strategy_city_detail_mut(S3Strategy *s, int idx) {
+    return (s && idx >= 0 && idx < s->n_cities && s->city[idx].has_detail)
+         ? &s->city[idx].det : NULL;
 }

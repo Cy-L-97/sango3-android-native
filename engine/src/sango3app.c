@@ -28,8 +28,10 @@
 #include "editor_scene.h"
 #include "kingdom_scene.h"
 #include "strategy_scene.h"
+#include "admin_menu.h"
 
 #include <SDL.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -234,9 +236,88 @@ static int load_custom_generals(S3Kingdom *k, const char *path) {
 
 /* ---------------------------------------------- 战略层：城市表（MenuMap.ini）
  * 城市窗口 = WND_CLASS_CITYBUTTON，Comment = 城名、Range = 地图像素坐标（1024×768）、
- * Command = 101.. 归属判定：City0N.ini（该剧本）里同名城池的 Lord 是否等于所选君主。 */
+ * Command = 101.. 归属判定：City0N.ini（该剧本）里同名城池的 Lord 是否等于所选君主。
+ *
+ * 城池详情（面板九行）另有三个来源，见 docs/城池信息面板与行政菜单.md 第二节：
+ *   Setting\City.ini        城名 → Size（城规模）
+ *   Setting\General02.ini   武将归属：每武将 City1..City7 = 该剧本所在城池（"廬江,野"）
+ *   Setting\Nation.ini      势力友好度：Friendship = "君主,值,君主,值..."
+ */
+
+/* 城名 → 计数（简单线性表，70 城规模足够） */
+typedef struct { char name[32]; int n; } NameCount;
+/* 城名 → 字符串（存太守等） */
+typedef struct { char name[32]; char val[32]; } NameStr;
+/* 城名 → 最佳执行者（誰智力/武力最高） */
+typedef struct { char city[32]; char who[32]; int val; } CityBest;
+
+static int nc_add(NameCount *a, int cap, const char *name, int n) {
+    if (!name || !*name) return 0;
+    for (int i = 0; i < cap; ++i) {
+        if (a[i].name[0] && !strcmp(a[i].name, name)) { a[i].n += n; return 1; }
+        if (!a[i].name[0]) { snprintf(a[i].name, sizeof a[i].name, "%s", name); a[i].n += n; return 1; }
+    }
+    return 0;
+}
+static int nc_get(const NameCount *a, int cap, const char *name) {
+    if (!name) return 0;
+    for (int i = 0; i < cap; ++i) if (a[i].name[0] && !strcmp(a[i].name, name)) return a[i].n;
+    return 0;
+}
+/* 查询并区分"未收录"与"收录且值为 0"（Nation.ini 的友好度真的会是 0） */
+static int nc_find(const NameCount *a, int cap, const char *name, int *out) {
+    if (!name) return 0;
+    for (int i = 0; i < cap; ++i)
+        if (a[i].name[0] && !strcmp(a[i].name, name)) { if (out) *out = a[i].n; return 1; }
+    return 0;
+}
+static void ns_set(NameStr *a, int cap, const char *name, const char *val) {
+    if (!name || !*name) return;
+    for (int i = 0; i < cap; ++i) {
+        if (a[i].name[0] && !strcmp(a[i].name, name)) {
+            snprintf(a[i].val, sizeof a[i].val, "%.31s", val ? val : "");
+            return;
+        }
+        if (!a[i].name[0]) {
+            snprintf(a[i].name, sizeof a[i].name, "%s", name);
+            snprintf(a[i].val,  sizeof a[i].val,  "%.31s", val ? val : "");
+            return;
+        }
+    }
+}
+static const char *ns_get(const NameStr *a, int cap, const char *name) {
+    if (!name) return NULL;
+    for (int i = 0; i < cap; ++i) if (a[i].name[0] && !strcmp(a[i].name, name)) return a[i].val;
+    return NULL;
+}
+/* 城池最佳执行者：val 更高者替换（原版口径：內政看智力、軍事看武力 —— 用户口述） */
+static void cb_take(CityBest *a, int cap, const char *city, const char *who, int val) {
+    if (!city || !*city || !who || !*who) return;
+    for (int i = 0; i < cap; ++i) {
+        if (a[i].city[0] && !strcmp(a[i].city, city)) {
+            if (val > a[i].val) {
+                a[i].val = val;
+                snprintf(a[i].who, sizeof a[i].who, "%.31s", who);
+            }
+            return;
+        }
+        if (!a[i].city[0]) {
+            snprintf(a[i].city, sizeof a[i].city, "%s", city);
+            snprintf(a[i].who,  sizeof a[i].who,  "%.31s", who);
+            a[i].val = val;
+            return;
+        }
+    }
+}
+static const CityBest *cb_get(const CityBest *a, int cap, const char *city) {
+    if (!city) return NULL;
+    for (int i = 0; i < cap; ++i) if (a[i].city[0] && !strcmp(a[i].city, city)) return &a[i];
+    return NULL;
+}
+
 static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
                        const char *my_lord, const char *truth_path) {
+    (void)truth_path;
     uint32_t len = 0;
     uint8_t *data = pak_get(c, "Setting\\MenuMap.ini", &len);
     if (!data) return -1;
@@ -244,9 +325,14 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
     free(data);
     if (!ini) return -2;
 
-    /* 先收集"我方城池名"（City0N.ini 里 Lord == 所选君主 的 Name） */
-    char mine[96][32];
-    int  n_mine = 0;
+    /* ---- 表①：City0N.ini —— 每城的 Lord/People/Money/Development/ReserveForce ---- */
+    static NameCount people_n[96], money_n[96], dev_n[96], reserve_n[96];
+    static NameStr   lord_n[96];
+    memset(people_n,  0, sizeof people_n);
+    memset(money_n,   0, sizeof money_n);
+    memset(dev_n,     0, sizeof dev_n);
+    memset(reserve_n, 0, sizeof reserve_n);
+    memset(lord_n,    0, sizeof lord_n);
     {
         char pc[64];
         snprintf(pc, sizeof pc, "Setting\\City%02d.ini", scenario_id);
@@ -259,41 +345,216 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
                 for (int i = 0; ; ++i) {
                     const S3IniSection *sec = s3_ini_section_at(ci, "ITEM", i);
                     if (!sec) break;
-                    const char *lord = s3_ini_str(sec, "Lord", NULL);
                     const char *nm   = s3_ini_str(sec, "Name", NULL);
-                    if (lord && nm && my_lord && !strcmp(lord, my_lord) && n_mine < 96)
-                        snprintf(mine[n_mine++], 32, "%s", nm);
+                    const char *lord = s3_ini_str(sec, "Lord", NULL);
+                    if (!nm || !lord) continue;
+                    ns_set(lord_n, 96, nm, lord);
+                    nc_add(people_n,  96, nm, s3_ini_int(sec, "People", 0));
+                    nc_add(money_n,   96, nm, s3_ini_int(sec, "Money", 0));
+                    nc_add(dev_n,     96, nm, s3_ini_int(sec, "Development", 0));
+                    nc_add(reserve_n, 96, nm, s3_ini_int(sec, "ReserveForce", 0));
                 }
                 s3_ini_free(ci);
             }
         }
     }
 
-    int n = 0;
+    /* ---- 表②：City.ini —— 城规模 Size ---- */
+    static NameCount size_n[96];
+    memset(size_n, 0, sizeof size_n);
+    {
+        uint32_t l3 = 0;
+        uint8_t *d3 = pak_get(c, "Setting\\City.ini", &l3);
+        if (d3) {
+            S3Ini *mi = s3_ini_parse_inc(d3, l3, include_cb, c);
+            free(d3);
+            if (mi) {
+                for (int i = 0; ; ++i) {
+                    const S3IniSection *sec = s3_ini_section_at(mi, "ITEM", i);
+                    if (!sec) break;
+                    const char *nm = s3_ini_str(sec, "Name", NULL);
+                    if (!nm) continue;
+                    nc_add(size_n, 96, nm, s3_ini_int(sec, "Size", 0));
+                }
+                s3_ini_free(mi);
+            }
+        }
+    }
+
+    /* ---- 表③：General02.ini —— 该剧本每城武将数（City<N>，值形如 "廬江,野"）----
+     * 同时算出各城的「最佳执行者」：先解 General01.ini 拿武力/智力，
+     * 再按归属逐城比较 —— 內政效果量看智力、徵兵量看武力（2026-09-16 用户口述）。 */
+    static NameCount gen_n[96];
+    static CityBest   bint[96], bstr[96];
+    static char gname[421][32];
+    static int  gstr[421], gintel[421];
+    static int  gn = 0;
+    memset(gen_n, 0, sizeof gen_n);
+    memset(bint,  0, sizeof bint);
+    memset(bstr,  0, sizeof bstr);
+    memset(gname, 0, sizeof gname);
+    gn = 0;
+    {
+        uint32_t l3b = 0;
+        uint8_t *d3b = pak_get(c, "Setting\\General01.ini", &l3b);
+        if (d3b) {
+            S3Ini *gi = s3_ini_parse_inc(d3b, l3b, include_cb, c);
+            free(d3b);
+            if (gi) {
+                for (int i = 0; i < gi->n_sections && gn < 421; ++i) {
+                    const S3IniSection *sec = &gi->sections[i];
+                    if (!sec->name || strcmp(sec->name, "GENERAL") != 0) continue;
+                    const char *nm = s3_ini_str(sec, "Name", NULL);
+                    if (!nm || !*nm) continue;
+                    snprintf(gname[gn], sizeof gname[gn], "%.31s", nm);
+                    gstr[gn]   = s3_ini_int(sec, "Strength", 0);
+                    gintel[gn] = s3_ini_int(sec, "Intelligence", 0);
+                    ++gn;
+                }
+                s3_ini_free(gi);
+            }
+        }
+        printf("roster: %d generals\n", gn);
+    }
+    {
+        uint32_t l4 = 0;
+        uint8_t *d4 = pak_get(c, "Setting\\General02.ini", &l4);
+        if (d4) {
+            S3Ini *gi = s3_ini_parse_inc(d4, l4, include_cb, c);
+            free(d4);
+            if (gi) {
+                char key[16];
+                snprintf(key, sizeof key, "City%d", scenario_id);
+                for (int i = 0; ; ++i) {
+                    const S3IniSection *sec = s3_ini_section_at(gi, "ITEM", i);
+                    if (!sec) break;
+                    const char *v = s3_ini_str(sec, key, NULL);
+                    const char *gnm = s3_ini_str(sec, "Name", NULL);
+                    if (!v || !*v) continue;
+                    char buf[32];
+                    int k = 0;
+                    while (v[k] && v[k] != ',' && k < (int)sizeof buf - 1) { buf[k] = v[k]; ++k; }
+                    buf[k] = '\0';
+                    nc_add(gen_n, 96, buf, 1);
+                    if (gnm && *gnm) {
+                        for (int g = 0; g < gn; ++g) {
+                            if (!strcmp(gname[g], gnm)) {
+                                cb_take(bint, 96, buf, gnm, gintel[g]);
+                                cb_take(bstr, 96, buf, gnm, gstr[g]);
+                                break;
+                            }
+                        }
+                    }
+                }
+                s3_ini_free(gi);
+            }
+        }
+    }
+
+    /* ---- 表④：Nation.ini —— 我方君主 → 各势力友好度（未列出者默认 50）---- */
+    static NameCount friend_n[96];
+    memset(friend_n, 0, sizeof friend_n);
+    if (my_lord && *my_lord) {
+        uint32_t l5 = 0;
+        uint8_t *d5 = pak_get(c, "Setting\\Nation.ini", &l5);
+        if (d5) {
+            S3Ini *ni = s3_ini_parse_inc(d5, l5, include_cb, c);
+            free(d5);
+            if (ni) {
+                /* 段落名是 NATION100/101/…（不是纯 "NATION"），故直接遍历 sections */
+                for (int i = 0; i < ni->n_sections; ++i) {
+                    const S3IniSection *sec = &ni->sections[i];
+                    if (!sec->name || strncmp(sec->name, "NATION", 6) != 0) continue;
+                    const char *nl = s3_ini_str(sec, "Lord", NULL);
+                    if (!nl || strcmp(nl, my_lord)) continue;
+                    const char *fs = s3_ini_str(sec, "Friendship", NULL);
+                    if (!fs) break;
+                    /* "君主,值,君主,值..." —— 逐对扫描 */
+                    const char *p = fs;
+                    while (*p) {
+                        char nm[32]; int k = 0;
+                        while (*p && *p != ',' && k < (int)sizeof nm - 1) nm[k++] = *p++;
+                        nm[k] = '\0';
+                        if (*p == ',') ++p;
+                        int val = 0, any = 0;
+                        while (*p >= '0' && *p <= '9') { val = val * 10 + (*p - '0'); ++p; any = 1; }
+                        while (*p && *p != ',') ++p;
+                        if (*p == ',') ++p;
+                        if (k > 0 && any) nc_add(friend_n, 96, nm, val);
+                    }
+                    break;
+                }
+                s3_ini_free(ni);
+            }
+        }
+    }
+
+    /* ---- 组装：遍历 MenuMap.ini 的城市按钮，逐城取详情 ---- */
+    int n = 0, n_mine = 0;
     for (int i = 0; ; ++i) {
         const S3IniSection *sec = s3_ini_section_at(ini, "WINDOW", i);
         if (!sec) break;
         const char *cls = s3_ini_str(sec, "Class", NULL);
         if (!cls || strcmp(cls, "WND_CLASS_CITYBUTTON") != 0) continue;
         const char *nm = s3_ini_str(sec, "Comment", NULL);
-        char range[64] = "";
         const char *rg = s3_ini_str(sec, "Range", NULL);
         if (!nm || !rg) continue;
-        snprintf(range, sizeof range, "%s", rg);
         int x = 0, y = 0, w = 0, h = 0;
-        if (sscanf(range, "%d%*[ ,]%d%*[ ,]%d%*[ ,]%d", &x, &y, &w, &h) < 2) continue;
-        int is_mine = 0;
-        for (int k = 0; k < n_mine; ++k)
-            if (!strcmp(mine[k], nm)) { is_mine = 1; break; }
+        if (sscanf(rg, "%d%*[ ,]%d%*[ ,]%d%*[ ,]%d", &x, &y, &w, &h) < 2) continue;
+
+        const char *cl = ns_get(lord_n, 96, nm);     /* 太守 = City0N.ini 的 Lord */
+
+        int is_mine = (my_lord && cl && !strcmp(cl, my_lord)) ? 1 : 0;
+        if (is_mine) ++n_mine;
+
         /* ⚠ Range 是城市按钮**矩形的左上角**（如 襄平 = 823,44,24,19），
          * 城池图标中心要加半个宽高 —— 否则标记/命中都偏到左上角（用户实测发现）。 */
         s3_strategy_add_city(st, nm, x + w / 2, y + h / 2, w, h, is_mine);
+
+        S3CityDetail det;
+        memset(&det, 0, sizeof det);
+        if (cl) snprintf(det.lord, sizeof det.lord, "%.31s", cl);
+        det.people       = nc_get(people_n, 96, nm);
+        det.money        = nc_get(money_n, 96, nm);
+        det.dev          = nc_get(dev_n, 96, nm);
+        det.reserve      = nc_get(reserve_n, 96, nm);
+        det.n_generals   = nc_get(gen_n, 96, nm);
+        det.size         = nc_get(size_n, 96, nm);
+        /* 友好度：我方 = 100（Nation.ini 不列自己）；他方查表，未列出的缺省 50
+         * （每势力只列 17 个对手，规模小的会漏列）。注意表里**允许值为 0**
+         * （张角与所有势力友好度就是 0），所以必须用带 found 标志的查询。 */
+        if (is_mine) {
+            det.friendliness = 100;
+        } else {
+            int fr = 0;
+            det.friendliness = nc_find(friend_n, 96, det.lord, &fr) ? fr : 50;
+        }
+        {   /* 最佳执行者（ General01 能力 × General02 归属，各取该城最高） */
+            const CityBest *bi = cb_get(bint, 96, nm);
+            const CityBest *bs = cb_get(bstr, 96, nm);
+            if (bi) { snprintf(det.worker_int, sizeof det.worker_int, "%.31s", bi->who);
+                      det.worker_int_val = bi->val; }
+            if (bs) { snprintf(det.worker_str, sizeof det.worker_str, "%.31s", bs->who);
+                      det.worker_str_val = bs->val; }
+        }
+        s3_strategy_set_city_detail(st, n, &det);
         ++n;
     }
     s3_ini_free(ini);
-    if (truth_path) (void)truth_path;
     printf("strategy: %d cities (%d mine)\n", n, n_mine);
     ALOG("strategy: %d cities (%d mine)", n, n_mine);
+    /* 数据层抽样日志（实机 logcat / PC 控制台可直接核对面板九行取值） */
+    for (int i = 0; i < n && i < 3; ++i) {
+        const char *cn = s3_strategy_city_name(st, i);
+        const S3CityDetail *dt = s3_strategy_city_detail(st, i);
+        if (!dt) { printf("  city[%d] %s: (no detail)\n", i, cn ? cn : "?"); continue; }
+        printf("  city[%d] %s: lord=%s gens=%d dev=%d people=%d money=%d res=%d size=%d fr=%d\n",
+               i, cn ? cn : "?", dt->lord, dt->n_generals, dt->dev,
+               dt->people, dt->money, dt->reserve, dt->size, dt->friendliness);
+        ALOG("city[%d] %s lord=%s gens=%d dev=%d people=%d money=%d res=%d fr=%d",
+             i, cn ? cn : "?", dt->lord, dt->n_generals, dt->dev,
+             dt->people, dt->money, dt->reserve, dt->friendliness);
+    }
     return n;
 }
 
@@ -316,6 +577,226 @@ static int save_start_state(const char *path, S3Kingdom *k) {    int idx = s3_ki
     fprintf(f, "]}\n");
     fclose(f);
     return 0;
+}
+
+/* ------------------------------------------------- 行政主選單：命令执行（S5，2026-09-16）
+ * 命令清单由用户对照原版逐一核对（見 docs 第五节）：
+ *   內政 移動/搜索/開發/人才 · 軍政 徵兵/訓練/戰爭/整備/調兵 · 外交 同盟/離間 ·
+ *   任免 太守/軍師/將軍 · 計略 調查/離間/情報 · 系統 進度存檔/進度讀取/設定調整/回主選單 ·
+ *   休息 確定（= 结束本月）
+ * 已实现（闭环）：搜索(简化) / 開發 / 徵兵 / 訓練 / 調查 / 情報(全局) /
+ *                進度存檔 / 回主選單 / 確定(月度结算)。
+ * 其余返回 0 → 菜单自动提示「尚未實現」，等对应玩法系统接入。
+ *
+ * ⚠ 数值口径属**首版自定**（原版公式未逆向），按用户口述的结构搭骨架：
+ *   · 開發：花钱买开发度；
+ *   · 開發度 → 「確定」时的每月金錢收入 + 人口成長；
+ *   · 徵兵：人口与金钱双消耗 → 兵士增加；
+ *   实测后按原版感觉再调。 */
+static S3Strategy  *g_ast = NULL;          /* 战略层实例（命令就地改城池数据） */
+static S3AdminMenu *g_adm = NULL;
+static S3Kingdom   *g_kd  = NULL;
+static const char  *g_start_path = NULL;
+static int          g_admin_quit = 0;      /* 置 1 → 主循环回主菜单 */
+static int          g_admin_map  = 0;      /* 置 1 → 朝堂切到大地图（確定后） */
+static int          g_month = 1;
+/* 待执行命令（原版指令流：朝堂点命令 → 切大地图 → 点我方城 → 该城武将执行）。
+ * -1 = 无。 */
+static int          g_pending_group = -1, g_pending_item = -1;
+static char         g_pending_label[32] = "";
+
+static void admin_say(const char *fmt, ...) {
+    char b[192];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(b, sizeof b, fmt, ap);
+    va_end(ap);
+    s3_admin_set_hint(g_adm, b);
+    printf("admin: %s\n", b);
+    ALOG("admin: %s", b);
+}
+
+/* 当前操作的城：优先"选中的城"，朝堂里没有选择 → 落到我方第一座城 */
+static int admin_city_idx(void) {
+    int idx = s3_strategy_selected(g_ast);
+    if (idx >= 0) return idx;
+    for (int i = 0; i < s3_strategy_count(g_ast); ++i)
+        if (s3_strategy_city_mine(g_ast, i)) return i;
+    return -1;
+}
+
+/* 在选定城池上执行待执行命令。执行者能力口径（2026-09-16 用户口述）：
+ *   · 開發/搜索 **不花金钱**，效果量看执行者（该城智力最高者）的智力；
+ *   · 徵兵数量看执行者（该城武力最高者）的武力，人口与金钱双耗。 */
+static void admin_execute_pending(int idx) {
+    const char *cname = s3_strategy_city_name(g_ast, idx);
+    S3CityDetail *cd = s3_strategy_city_detail_mut(g_ast, idx);
+    if (!cd || !cname) return;
+    const char *who_i = cd->worker_int[0] ? cd->worker_int : "（无人）";
+    const char *who_s = cd->worker_str[0] ? cd->worker_str : "（无人）";
+    const int   iq    = cd->worker_int_val, sq = cd->worker_str_val;
+
+    if (g_pending_group == 0 && g_pending_item == 1) {              /* 搜索 */
+        int roll = rand() % 100, need = 45 + iq / 4;                /* 智力 80 → 65% */
+        if (roll < need) {
+            switch (rand() % 3) {
+            case 0: { int gain = 100 + rand() % 200;
+                      cd->money += gain;
+                      admin_say("%s城「搜索」：%s（智力%d）發現金錢 +%d", cname, who_i, iq, gain); } break;
+            case 1:
+                admin_say("%s城「搜索」：%s（智力%d）發現在野人才（招募未開放）", cname, who_i, iq); break;
+            default:
+                admin_say("%s城「搜索」：%s（智力%d）發現物品（配裝未開放）", cname, who_i, iq); break;
+            }
+        } else {
+            admin_say("%s城「搜索」：%s（智力%d）一無所獲", cname, who_i, iq);
+        }
+    } else if (g_pending_group == 0 && g_pending_item == 2) {       /* 開發 */
+        int up = 5 + iq / 5;                                        /* 智力 100 → +25 */
+        cd->dev += up; if (cd->dev > 999) cd->dev = 999;
+        admin_say("%s城「開發」：%s（智力%d）開發度 +%d → %d（決定每月收入與成長）",
+                  cname, who_i, iq, up, cd->dev);
+    } else if (g_pending_group == 1 && g_pending_item == 0) {       /* 徵兵 */
+        int nr = sq * 5, cost = nr / 5;
+        if (nr <= 0) { admin_say("%s城無人可執行「徵兵」", cname); return; }
+        if (cd->people <= nr + 1000) { admin_say("%s城人口不足，徵兵中止（人口 %d）", cname, cd->people); return; }
+        if (cd->money < cost) { admin_say("%s城金錢不足（徵 %d 兵需 %d，當前 %d）", cname, nr, cost, cd->money); return; }
+        cd->money -= cost; cd->people -= nr; cd->reserve += nr;
+        admin_say("%s城「徵兵」：%s（武力%d）征得 %d 兵（兵士 %d，人口 -%d，金錢 -%d）",
+                  cname, who_s, sq, nr, cd->reserve, nr, cost);
+    } else if (g_pending_group == 1 && g_pending_item == 1) {       /* 訓練 */
+        if (cd->money < 50) { admin_say("%s城金錢不足（訓練需 50）", cname); return; }
+        cd->money -= 50;
+        admin_say("%s城「訓練」：%s（武力%d）部隊訓練完成（金錢 -50）", cname, who_s, sq);
+    }
+    /* ⚠ 不清除 pending、不自动返回朝堂 —— 玩家可连续对多座城执行同一命令
+     * （2026-09-16 用户反馈）；右键返回朝堂时才结束命令阶段。 */
+}
+
+/* 结束命令阶段：清挂起 + 恢复菜单 + 清信息条引导 */
+static void admin_cancel_pending(void) {
+    if (g_pending_group < 0) return;
+    admin_say("已取消「%s」", g_pending_label);
+    g_pending_group = g_pending_item = -1;
+    g_pending_label[0] = '\0';
+    s3_strategy_set_banner(g_ast, "");
+    s3_admin_set_visible(g_adm, 1);
+}
+
+/* 朝堂点「需要城池+执行者」的命令 → 挂起，切大地图等玩家选城。
+ * 菜单**收起**（否则遮住城池没法选，2026-09-16 用户实测反馈），
+ * 引导文案走信息条（banner）。 */
+static int admin_set_pending(int group, int item, const char *label) {
+    g_pending_group = group; g_pending_item = item;
+    snprintf(g_pending_label, sizeof g_pending_label, "%s", label);
+    g_admin_map = 1;
+    s3_admin_set_visible(g_adm, 0);          /* 收起菜单 */
+    s3_admin_set_hint(g_adm, "");
+    {
+        char b[128];
+        snprintf(b, sizeof b, "「%s」命令階段：請點選我方城池（可連續執行，右鍵返回朝堂）", label);
+        s3_strategy_set_banner(g_ast, b);
+    }
+    admin_say("進入「%s」命令階段：請點選我方城池", label);
+    return 1;
+}
+
+static int admin_cmd_cb(void *ud, int group, int item, const char *label) {
+    (void)ud;
+    /* ---- 系統（不需要选城） ---- */
+    if (group == 5) {
+        switch (item) {
+        case 0:                                             /* 進度存檔 */
+            if (g_start_path && g_kd && save_start_state(g_start_path, g_kd) == 0)
+                admin_say("已存檔：%s（%s）", s3_kingdom_lord_name(g_kd, s3_kingdom_selected(g_kd)),
+                          g_start_path);
+            else admin_say("存檔失敗");
+            return 1;
+        case 3:                                             /* 回主選單 */
+            g_admin_quit = 1;
+            admin_say("回主選單");
+            return 1;
+        default: return 0;                                  /* 進度讀取 / 設定調整 */
+        }
+    }
+    /* ---- 休息「確定」= 结束本月：对我方全部城做月度结算，然后切到大地图 ---- */
+    if (group == 6) {
+        int n = s3_strategy_count(g_ast);
+        long long money = 0, people = 0, troop = 0;
+        for (int i = 0; i < n; ++i) {
+            S3CityDetail *d = s3_strategy_city_detail_mut(g_ast, i);
+            if (!d || !s3_strategy_city_mine(g_ast, i)) continue;
+            int income = d->people / 1000 + d->dev * 2;       /* 收入：人头 + 开发 */
+            int growth = d->people * d->dev / 10000;          /* 成长：开发度驱动 */
+            d->money  += income;
+            d->people += growth;
+            money += d->money; people += d->people; troop += d->reserve;
+        }
+        ++g_month;
+        s3_strategy_set_month(g_ast, g_month);
+        admin_say("第 %d 月開始 —— 金錢 %lld · 人口 %lld · 兵士 %lld（開發度決定收入與成長）",
+                  g_month, money, people, troop);
+        g_admin_map = 1;                        /* 结算完切到大地图看局面 */
+        return 1;
+    }
+
+    /* ---- 計略的調查/情報是纯查询，即时返回 ---- */
+    if (group == 4) {
+        if (item == 0) {                                    /* 調查 = 当前城详情 */
+            int idx = admin_city_idx();
+            const S3CityDetail *cd = (idx >= 0) ? s3_strategy_city_detail(g_ast, idx) : NULL;
+            const char *cname = (idx >= 0) ? s3_strategy_city_name(g_ast, idx) : NULL;
+            if (!cd || !cname) { admin_say("沒有可查詢的城池"); return 1; }
+            admin_say("%s：太守 %s · 人口 %d · 金錢 %d · 開發 %d · 武將 %d · 兵士 %d · 友好 %d",
+                      cname, cd->lord, cd->people, cd->money, cd->dev,
+                      cd->n_generals, cd->reserve, cd->friendliness);
+            return 1;
+        }
+        if (item == 2) {                                    /* 情報 = 我方全局概况 */
+            long long money = 0, people = 0, troop = 0;
+            int cities = 0, gens = 0;
+            for (int i = 0; i < s3_strategy_count(g_ast); ++i) {
+                const S3CityDetail *d = s3_strategy_city_detail(g_ast, i);
+                if (!d || !s3_strategy_city_mine(g_ast, i)) continue;
+                ++cities; gens += d->n_generals;
+                money += d->money; people += d->people; troop += d->reserve;
+            }
+            admin_say("我方概况：%d 城 · %d 將 · 金錢 %lld · 人口 %lld · 兵士 %lld",
+                      cities, gens, money, people, troop);
+            return 1;
+        }
+        return 0;                                           /* 離間 */
+    }
+
+    /* ---- 需要城池 + 执行者的命令 → 挂起，切大地图选城（原版指令流） ----
+     * 內政 搜索/開發 · 軍政 徵兵/訓練（移動/人才/物品/戰爭/整備/調兵等占位） */
+    if ((group == 0 && (item == 1 || item == 2)) ||
+        (group == 1 && (item == 0 || item == 1)))
+        return admin_set_pending(group, item, label);
+    return 0;   /* 其余：占位，菜单自动提示「尚未實現」 */
+}
+
+/* 呈现模式切换（幂等，记在静态 cur 里）：
+ *   0 = 菜单（640×480 逻辑画布 + EXTEND 条带 + NEAREST）
+ *   1 = 朝堂（640×480 逻辑画布 + **STRETCH 整图拉伸** + NEAREST）
+ *       —— 2026-09-16 用户实测：朝堂用 EXTEND 会镜像出重复柱子、比例别扭，
+ *          原版（Winlator 实测截图）就是整图拉伸铺满，照做。
+ *   2 = 大地图（素材原生分辨率视口 + COVER + BILINEAR） */
+static int32_t g_vw = 1024, g_vh = 768;    /* 地图视口尺寸（mode 3 进入时计算） */
+static void apply_present(Sango3Presenter *p, int kind, int32_t cw, int32_t ch) {
+    static int cur = -1;
+    if (cur == kind) return;
+    if (kind == 2) {
+        sango3_presenter_set_logical_size(p, g_vw, g_vh);
+        sango3_presenter_set_aspect(p, SANGO3_ASPECT_COVER);
+        sango3_presenter_set_filter(p, SANGO3_FILTER_BILINEAR);
+    } else {
+        sango3_presenter_set_logical_size(p, cw, ch);
+        sango3_presenter_set_aspect(p, kind == 1 ? SANGO3_ASPECT_STRETCH
+                                                 : SANGO3_ASPECT_EXTEND);
+        sango3_presenter_set_filter(p, SANGO3_FILTER_NEAREST);
+    }
+    cur = kind;
 }
 
 /* ---------------------------------------------------------------- selftest */
@@ -651,12 +1132,26 @@ int main(int argc, char **argv) {
             if (!st) st = s3_strategy_new(read_asset_cb, &ctx, draw_text_cb, &fc);
             if (s3_strategy_set_map(st, "Shape\\AD\\Base\\Map.shp") != 0)
                 ALOG("strategy map load FAILED");
+            /* 城池信息面板底图（原版 7400 / AD\Base\CityInfo.shp，标签烘焙在图内） */
+            if (s3_strategy_set_panel(st, "Shape\\AD\\Base\\CityInfo.shp") != 0)
+                ALOG("city panel load FAILED");
             s3_strategy_clear_cities(st);
             if (kd) {
                 int sid = s3_kingdom_scenario(kd);
                 int si  = s3_kingdom_selected(kd);
-                load_cities(st, &ctx, sid,
-                            si >= 0 ? s3_kingdom_lord_name(kd, si) : NULL, NULL);
+                const char *my_lord = si >= 0 ? s3_kingdom_lord_name(kd, si) : NULL;
+                s3_strategy_set_my_lord(st, my_lord);
+                load_cities(st, &ctx, sid, my_lord, NULL);
+                /* 朝堂背景轮换（自拟口径：按我方城池数分档 —— 用户确认原版"按发展
+                 * 规模"换背景，但判断方式未逆向；先 1-5 城 BG001 / 6-15 BG002 /
+                 * ≥16 BG003，实测再调） */
+                int mine = 0;
+                for (int i = 0; i < s3_strategy_count(st); ++i)
+                    if (s3_strategy_city_mine(st, i)) ++mine;
+                char bgp[80];
+                snprintf(bgp, sizeof bgp, "Shape\\AD\\Background\\%s.shp",
+                         mine >= 16 ? "BG003" : mine >= 6 ? "BG002" : "BG001");
+                s3_strategy_set_court_bg(st, bgp);
             }
             /* 视口尺寸按屏幕宽高比取（保持地图原生像素 1:1 → 不放大不缩水）；
              * 视口比例 == 屏幕比例 → COVER 下正好铺满，多余部分靠拖动查看。 */
@@ -679,37 +1174,80 @@ int main(int argc, char **argv) {
                     if (cv_map) sango3_canvas_free(cv_map);
                     cv_map = sango3_canvas_new(vw, vh, 0, 0, 0);
                 }
-                sango3_presenter_set_logical_size(p, vw, vh);
+                g_vw = vw; g_vh = vh;
                 ALOG("strategy viewport %dx%d (window %dx%d)", vw, vh, ww, wh);
             }
-            /* 地图是"内容本身" → COVER（视口==屏幕比例时正好铺满）+ 平滑滤镜 */
-            sango3_presenter_set_aspect(p, SANGO3_ASPECT_COVER);
-            sango3_presenter_set_filter(p, SANGO3_FILTER_BILINEAR);
-            mode = 4;
+            /* 行政主選單（原版 8000）：常驻左侧，位置按原版 (45,36) × zoom。
+             * 朝堂 / 大地图两个视图共用。 */
+            if (!g_adm) g_adm = s3_admin_new(read_asset_cb, &ctx, draw_text_cb, &fc,
+                                            admin_cmd_cb, NULL);
+            g_ast = st; g_kd = kd; g_start_path = start_path; g_admin_quit = 0;
+            s3_admin_set_origin(g_adm, 45 * 2, 36 * 2);
+            s3_admin_set_visible(g_adm, 1);
+            /* 朝堂背景已在 load_cities 后按势力规模选定 */
+            s3_strategy_set_month(st, g_month);
+            mode = 5;                        /* 先进朝堂（内政阶段），確定后再看地图 */
         }
-        if (mode == 4) {
-            /* ================= 战略层：地图 + 城市 ================= */
-            s3_strategy_render(st, cv_map);
-            sango3_presenter_upload(p, cv_map->px);
+        if (mode == 5 || mode == 4) {
+            /* ============ 战略层：朝堂（5，内政阶段）/ 大地图（4） ============ */
+            const int court = (mode == 5);
+            apply_present(p, court ? 1 : 2, cw, ch);
+            s3_strategy_set_view(st, court);
+            s3_strategy_set_panel_zoom(st, court ? 1 : 2);   /* 640 画布用原版尺寸 */
+            /* 菜单几何随视图：朝堂 640×480 用原版尺寸（zoom 1，2026-09-16 用户反馈
+             * zoom 2 比例过大观感差）；大地图 1024×768 视口用 zoom 2。 */
+            s3_admin_set_zoom(g_adm, court ? 1 : 2);
+            s3_admin_set_origin(g_adm, 45 * (court ? 1 : 2), 36 * (court ? 1 : 2));
+            /* ⚠ 只在"切进朝堂"的**边沿**恢复菜单 —— 不能每帧 set_visible(1)，
+             *   否则命令阶段刚收起的菜单下一帧又被顶回来（2026-09-16 实测踩坑）。 */
+            {
+                static int last_court = -1;
+                if (last_court != court) {
+                    if (court) s3_admin_set_visible(g_adm, 1);
+                    last_court = court;
+                }
+            }
+            if (court) {
+                /* 朝堂里没有地图可点 → "当前城"固定为我方第一座城（主城） */
+                int first = -1;
+                for (int i = 0; i < s3_strategy_count(st); ++i)
+                    if (s3_strategy_city_mine(st, i)) { first = i; break; }
+                s3_strategy_select(st, first);
+            }
+            Sango3Canvas *cvc = court ? cv : cv_map;
+            s3_strategy_render(st, cvc);
+            s3_admin_render(g_adm, cvc);
+            sango3_presenter_upload(p, cvc->px);
             if (sango3_presenter_frame(p, &drawn)) break;
 
             S3Pointer pt;
             sango3_presenter_pointer(p, &pt);
-            if (pt.rclick) {
-                /* 回菜单：恢复 640×480 逻辑画布 + EXTEND 条带 + 像素滤镜 */
-                sango3_presenter_set_filter(p, SANGO3_FILTER_NEAREST);
-                sango3_presenter_set_aspect(p, SANGO3_ASPECT_EXTEND);
-                sango3_presenter_set_logical_size(p, cw, ch);
-                mode = 0; app.hover = app.press = 0;
-            } else {
+            s3_admin_on_move(g_adm, pt.inside ? (int32_t)pt.lx : -1,
+                                   pt.inside ? (int32_t)pt.ly : -1);
+            if (g_admin_quit) {
+                /* 回主選單 = 主菜单首界面（開始遊戲/讀取進度…），不是中途的场景
+                 * （2026-09-16 用户指正）—— 场景栈清空并复位根。 */
+                mode = 0; app.hover = app.press = 0; g_admin_quit = 0;
+                app.sp = 0;
+                app.roots = SC_MAIN; app.n_roots = NARR(SC_MAIN);
+            } else if (g_admin_map) {
+                g_admin_map = 0;
+                if (court) mode = 4;         /* 「確定」月度结算完 → 切大地图 */
+            } else if (pt.rclick) {
+                if (g_pending_group >= 0) admin_cancel_pending();   /* 结束命令阶段 */
+                if (court) { mode = 0; app.hover = app.press = 0; }   /* 朝堂右键 → 主菜单 */
+                else       { mode = 5; }                              /* 地图右键 → 回朝堂 */
+            } else if (!court) {
                 /* 拖动查看地图：按下→移动（超阈值算拖动，地图随手走）→
-                 * 抬起且未移动过才算点击选城（避免拖动误选）。 */
-                static int sdrag = 0, smoved = 0;
+                 * 抬起且未移动过才算点击选城（避免拖动误选）。
+                 * ⚠ 落在行政主選單上的按压一律归菜单，既不拖动地图也不选城。 */
+                static int sdrag = 0, smoved = 0, smenu = 0;
                 static int32_t spx = -1, spy = -1;
                 if (pt.lclick) {
+                    smenu = s3_admin_hit(g_adm, (int32_t)pt.lx, (int32_t)pt.ly) ? 1 : 0;
                     sdrag = 1; smoved = 0;
                     spx = (int32_t)pt.lx; spy = (int32_t)pt.ly;
-                } else if (pt.ldown && sdrag) {
+                } else if (pt.ldown && sdrag && !smenu) {
                     int32_t dx = (int32_t)pt.lx - spx;
                     int32_t dy = (int32_t)pt.ly - spy;
                     if (dx > 1 || dx < -1 || dy > 1 || dy < -1) {
@@ -720,14 +1258,45 @@ int main(int argc, char **argv) {
                 }
                 if (!pt.ldown && sdrag) {
                     sdrag = 0;
-                    if (!smoved) s3_strategy_on_click(st, spx, spy);
+                    if (!smoved) {
+                        if (smenu) s3_admin_on_click(g_adm, spx, spy);
+                        else {
+                            s3_strategy_on_click(st, spx, spy);
+                            /* 指令流：命令阶段点城 → 我方城执行；**不返回朝堂**，
+                             * 可连续点选下一座城（2026-09-16 用户反馈），
+                             * 右键才结束命令阶段回朝堂。 */
+                            if (g_pending_group >= 0) {
+                                int cidx = s3_strategy_selected(st);
+                                if (cidx >= 0) {
+                                    if (s3_strategy_city_mine(st, cidx)) {
+                                        admin_execute_pending(cidx);
+                                        char b[128];
+                                        snprintf(b, sizeof b,
+                                                 "「%s」命令階段：已執行，可繼續點選其它城池（右鍵返回朝堂）",
+                                                 g_pending_label);
+                                        s3_strategy_set_banner(g_ast, b);
+                                    } else {
+                                        admin_say("「%s」只能對我方城池執行", g_pending_label);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    smenu = 0;
                 }
+            } else {
+                /* 朝堂：点击只归行政主選單 */
+                static int32_t spx = -1, spy = -1;
+                static int sdown = 0;
+                if (pt.lclick) { sdown = 1; spx = (int32_t)pt.lx; spy = (int32_t)pt.ly; }
+                if (!pt.ldown && sdown) { sdown = 0; s3_admin_on_click(g_adm, spx, spy); }
             }
             SDL_Delay(16);
             continue;
         }
 
         /* ================= 菜单场景 ================= */
+        apply_present(p, 0, cw, ch);
         ms.roots = app.roots;
         ms.n_roots = app.n_roots;
         s3_menu_render(&ms, cv);
@@ -760,15 +1329,31 @@ int main(int argc, char **argv) {
             if (app.press == hit) {
                 const S3UiWindow *w = s3_ui_window(&L, app.press);
                 int32_t cmd = w ? w->command : -1;
+                /* 场景上下文：同一命令号在不同场景含义不同
+                 * （存檔畫面的「確定/取消」cmd=1/2，与主選單的 開始遊戲/讀取進度 撞号；
+                 *   存檔槽位 cmd=11..20 与選擇時期的剧本按钮 11..17 撞号 ——
+                 *   不按场景区分会点取消又进存档、点存档槽跳剧本，2026-09-16 实测踩坑） */
+                const int in_save = (app.n_roots > 0 && app.roots[0] == 220u);
+                const int in_age  = (app.n_roots > 0 && app.roots[0] == 100u);
                 if (cmd == 6) { printf("command=6 (quit)\n"); break; }
-                Scene next = scene_for_command(cmd);
-                if (cmd == 3) {
+                if (in_save && (cmd == 1 || cmd == 2)) {
+                    /* 存/取進度畫面的 確定/取消 → 返回上一場景
+                     * （存取功能尚未實現；先保证取消能返回 —— 2026-09-16 用户反馈） */
+                    printf("save scene: cmd=%d -> back\n", (int)cmd);
+                    ALOG("save scene back (cmd=%d)", (int)cmd);
+                    if (app.sp > 0) {
+                        --app.sp;
+                        app.roots = app.stack[app.sp].roots;
+                        app.n_roots = app.stack[app.sp].n;
+                    }
+                    app.hover = app.press = 0;
+                } else if (cmd == 3) {
                     /* 登錄武將 → 创建自定义武将表单 */
                     mode = 1;
                     app.hover = app.press = 0;
                     printf("editor mode (create general)\n");
                     ALOG("editor mode (create general)");
-                } else if (cmd >= 11 && cmd <= 17) {
+                } else if (cmd >= 11 && cmd <= 17 && in_age) {
                     /* 選擇時期的剧本按钮 → 载入该剧本的君主列表 */
                     int sid = cmd - 10;                 /* 11..17 → 剧本 1..7 */
                     if (!kd) kd = s3_kingdom_new(draw_text_cb, &fc);
@@ -780,16 +1365,22 @@ int main(int argc, char **argv) {
                     ALOG("scenario %d (%s): %d lords (+%d custom)",
                          sid, SCENARIO_NAMES[sid], nl, nc);
                     if (nl > 0 || nc > 0) { mode = 2; app.hover = app.press = 0; }
-                } else if (next.n > 0) {
-                    if (app.sp < 16) { app.stack[app.sp].roots = app.roots; app.stack[app.sp].n = app.n_roots; ++app.sp; }
-                    app.roots = next.roots;
-                    app.n_roots = next.n;
-                    app.hover = app.press = 0;
-                    printf("scene -> %d roots (from cmd=%d)\n", app.n_roots, cmd);
-                    ALOG("scene -> %d roots (cmd=%d)", app.n_roots, cmd);
-                } else if (cmd >= 0) {
-                    printf("click id=%u cmd=%d (no scene mapping yet)\n", app.press, cmd);
-                    ALOG("click id=%u cmd=%d (no mapping)", app.press, cmd);
+                } else if (cmd == 40) {
+                    printf("click cmd=40 (auto save/load: not implemented)\n");
+                    ALOG("click cmd=40 (not implemented)");
+                } else {
+                    Scene next = scene_for_command(cmd);
+                    if (next.n > 0) {
+                        if (app.sp < 16) { app.stack[app.sp].roots = app.roots; app.stack[app.sp].n = app.n_roots; ++app.sp; }
+                        app.roots = next.roots;
+                        app.n_roots = next.n;
+                        app.hover = app.press = 0;
+                        printf("scene -> %d roots (from cmd=%d)\n", app.n_roots, cmd);
+                        ALOG("scene -> %d roots (cmd=%d)", app.n_roots, cmd);
+                    } else if (cmd >= 0) {
+                        printf("click id=%u cmd=%d (no scene mapping yet)\n", app.press, cmd);
+                        ALOG("click id=%u cmd=%d (no mapping)", app.press, cmd);
+                    }
                 }
             }
             app.press = 0;

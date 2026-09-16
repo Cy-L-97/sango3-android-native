@@ -27,6 +27,10 @@ struct Sango3Presenter {
     int           ptr_inside;
     int           ptr_ldown, ptr_rdown;
     int           ptr_lclick, ptr_rclick;
+    /* 长按检测（平板无右键 → 长按 = 右键，2026-09-16 用户反馈） */
+    uint32_t      lp_ticks;          /* 按下时刻 */
+    float         lp_x, lp_y;        /* 按下位置（逻辑坐标） */
+    int           lp_active, lp_fired;
     /* 文本输入 / 按键队列（供表单类界面轮询；frame() 收集，poll 取走） */
     char          text_q[8][32];
     int           text_n;
@@ -279,6 +283,26 @@ int sango3_presenter_frame(Sango3Presenter *p, uint32_t *out_drawn) {
         }
     }
     if (quit) return 1;
+
+    /* 长按 → 当作"右键按下边沿"（平板无右键；2026-09-16 用户反馈）。
+     * 规则：按下持续 > 600ms 且位移未超过长按阈值 → 触发一次 rclick，
+     * 同一次按压不重复触发；拖动（位移大）视为拖拽，不触发。 */
+    if (p->ptr_ldown) {
+        uint32_t now = SDL_GetTicks();
+        if (!p->lp_active) {
+            p->lp_active = 1; p->lp_fired = 0;
+            p->lp_ticks = now; p->lp_x = p->ptr_lx; p->lp_y = p->ptr_ly;
+        } else {
+            float dx = p->ptr_lx - p->lp_x, dy = p->ptr_ly - p->lp_y;
+            int moved = (dx * dx + dy * dy) > 400.0f;      /* >20 逻辑像素 */
+            if (!p->lp_fired && !moved && now - p->lp_ticks > 600) {
+                p->ptr_rclick = 1;
+                p->lp_fired = 1;
+            }
+        }
+    } else {
+        p->lp_active = 0; p->lp_fired = 0;
+    }
 
     SDL_SetRenderDrawColor(p->ren, 0, 0, 0, 255);
     SDL_RenderClear(p->ren);

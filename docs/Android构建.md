@@ -119,9 +119,14 @@ print(re.search(r'<url>([^<]+)</url>', data[i:i+4000]).group(1))
 
 ---
 
-## 七、已知限制 / 下一步
+## 七、已知限制 / 下一步（2026-09-16 更新）
 
-- **无字体**：首版 APK 未含 SDL2_ttf（文本层跳过）。要显示文字需把 SDL2_ttf + FreeType 源码纳入 NDK 构建。
-- **竖屏锁**：manifest 里 `screenOrientation="landscape"`（SDL2 模板自带），实机为横屏显示。
+- ~~**无字体**~~ **已解决（2026-09-15）**：`font.c` FreeType 直连后端（见第三节），
+  安卓中文文本正常 —— 实测主菜单右侧 V2.2C 文本出字（`tmp/android_font_shot.png`）。
+- ~~**EXTEND 宽高比未实现（当前 pillarbox）**~~ **已解决（2026-09-15）**：
+  `SANGO3_ASPECT_EXTEND`（UI 类场景：按长边撑满 + 边缘条带镜像延展，不留黑边不变形）+
+  `SANGO3_ASPECT_COVER`（内容类场景如地图：铺满裁切、顶对齐）；`sango3app --aspect` 可运行时切。
 - **资源靠 adb push**：正式分发时应把 PAK 打进 APK assets 或做首次启动解包（版权与体积需权衡）。
-- **EXTEND 宽高比**（手机长屏真正利用宽度）尚未实现，当前是 pillarbox。
+- **竖屏锁**：manifest 里 `screenOrientation="landscape"`（SDL2 模板自带），实机为横屏显示。
+- **实测窗口尺寸**：横屏 `2560×1392` / 竖屏 `1080×1848`；
+  `input tap` 注入坐标与 presenter 反算有 ~72px(y) 偏差（原因未查，不影响真人操作）。

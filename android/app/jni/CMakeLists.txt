@@ -55,6 +55,7 @@ add_library(main SHARED
   ${ENGINE}/src/editor_scene.c
   ${ENGINE}/src/kingdom_scene.c
   ${ENGINE}/src/strategy_scene.c
+  ${ENGINE}/src/admin_menu.c
   ${ENGINE}/src/sango3app.c)
 
 target_include_directories(main PRIVATE ${ENGINE}/src ${FT_SRC}/include)
