@@ -749,14 +749,18 @@ static void admin_execute_pending(int idx, int off_idx) {
         admin_say("%s「開發」：%s（智%d 級%d）開發度 +%d → %d", cname, who_i, iq, lv, up, cd->dev);
     } else if (g_pending_group == 1 && g_pending_item == 0) {       /* 徵兵 */
         int nr = lv * S3_TROOPS_PER_LEVEL;                          /* 定稿 C3：等级×40 */
-        int cost = nr / 5;
+        /* 定稿 J7（2026-09-17 用户终裁）：**每兵 2 金**（原版 10 金，我们刻意更便宜） */
+        int cost = nr * S3_RECRUIT_GOLD_PER_TROOP;
         if (cd->people <= nr + 1000) { admin_say("%s人口不足，徵兵中止（人口 %d）", cname, cd->people); return; }
         if (cd->money < cost) { admin_say("%s金錢不足（徵 %d 兵需 %d，當前 %d）", cname, nr, cost, cd->money); return; }
         cd->money -= cost; cd->people -= nr; cd->reserve += nr;
         admin_say("%s「徵兵」：%s（武%d 級%d）征得 %d 兵（兵士 %d，人口 -%d，金錢 -%d）",
                   cname, who_s, sq, lv, nr, cd->reserve, nr, cost);
     } else if (g_pending_group == 1 && g_pending_item == 1) {       /* 訓練：不扣钱，升士气 */
+        /* 定稿 C2/J4（C4 裁决）：公式 5 + 武力/5 + 等级，结果**钳到 25~30**（对齐甲 §4.3） */
         int up = 5 + sq / 5 + lv;                                   /* 武力权重大 */
+        if (up < S3_TRAIN_MORALE_MIN) up = S3_TRAIN_MORALE_MIN;
+        if (up > S3_TRAIN_MORALE_MAX) up = S3_TRAIN_MORALE_MAX;
         cd->morale += up; if (cd->morale > 100) cd->morale = 100;
         admin_say("%s「訓練」：%s（武%d 級%d）士氣 +%d → %d（城池整體）",
                   cname, who_s, sq, lv, up, cd->morale);
@@ -865,17 +869,21 @@ static int admin_cmd_cb(void *ud, int group, int item, const char *label) {
         for (int i = 0; i < n; ++i) {
             S3CityDetail *d = s3_strategy_city_detail_mut(g_ast, i);
             if (!d || !s3_strategy_city_mine(g_ast, i)) continue;
-            int income = d->people / 1000 + d->dev * 2;       /* 收入：人头 + 开发 */
-            int growth = d->people * d->dev / 10000;          /* 成长：开发度驱动 */
+            /* 定稿 J1/J2（C1 裁决）：原版是**每半年**结算，我们按月摊平 → 各除以 6 */
+            int income = (d->people / 100 + d->dev * 2) / 6;         /* 税收 */
+            int growth = (int)((long long)d->people * d->dev * 3 / 100000) / 6;  /* 人口成长 */
             d->money  += income;
             d->people += growth;
             money += d->money; people += d->people; troop += d->reserve;
         }
         ++g_month;
         s3_strategy_set_month(g_ast, g_month);
+        /* 定稿 M2/M3：月度自动经验 + 自动升级（A1 比例制）—— 需求①「我方将领自动升级」 */
+        int ups = g_roster ? s3_roster_monthly_growth(g_roster) : 0;
         if (g_roster) s3_roster_end_turn(g_roster);   /* 定稿 A2：回合结束清空"本月已行动" */
-        admin_say("第 %d 月開始 —— 金錢 %lld · 人口 %lld · 兵士 %lld（開發度決定收入與成長）",
+        admin_say("第 %d 月開始 —— 金錢 %lld · 人口 %lld · 兵士 %lld（稅收/成長按月攤平）",
                   g_month, money, people, troop);
+        if (ups > 0) admin_say("本月自動升級：%d 名武將（月度自動經驗 · 方案 A1）", ups);
         g_admin_map = 1;                        /* 结算完切到大地图看局面 */
         return 1;
     }
@@ -1363,10 +1371,15 @@ int main(int argc, char **argv) {
                 int sid = s3_kingdom_scenario(kd);
                 int si  = s3_kingdom_selected(kd);
                 const char *my_lord = si >= 0 ? s3_kingdom_lord_name(kd, si) : NULL;
+                /* 定稿 Q 区 / 甲 §16.2：**第 N 个剧本 → 武将初始等级 = N**（新君主暂不区分）。
+                 * 必须在 load_cities（内部 add 逐将）之前设好。 */
+                s3_roster_set_base_level(g_roster, sid);
                 s3_strategy_set_my_lord(st, my_lord);
                 load_cities(st, &ctx, sid, my_lord, g_roster);
-                printf("roster: %d officers\n", s3_roster_count(g_roster));
-                ALOG("roster: %d officers", s3_roster_count(g_roster));
+                printf("roster: %d officers (base level %d)\n",
+                       s3_roster_count(g_roster), s3_roster_base_level(g_roster));
+                ALOG("roster: %d officers (base level %d)",
+                     s3_roster_count(g_roster), s3_roster_base_level(g_roster));
                 /* 逐城统计可执行者（只列我方城）—— 实机 logcat 可据此复核 BUG-1 是否修好 */
                 for (int i = 0; i < s3_strategy_count(st); ++i) {
                     if (!s3_strategy_city_mine(st, i)) continue;
