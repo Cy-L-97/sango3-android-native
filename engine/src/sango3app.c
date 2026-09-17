@@ -1387,8 +1387,10 @@ int main(int argc, char **argv) {
                                         const char *cn = s3_strategy_city_name(st, cidx);
                                         int idle = s3_roster_worker_count(g_roster, cn, 1);
                                         g_pending_city = cidx;
+                                        /* only_idle = 0：**列出全部**，本月已行动者由界面置灰
+                                         * 且不可点（定稿 A2 原文是"置灰"，不是"隐藏"） */
                                         s3_picker_open(g_picker, g_roster, cn,
-                                                       g_pending_label, 1);
+                                                       g_pending_label, 0);
                                         printf("picker open: city=%s idle=%d\n",
                                                cn ? cn : "?", idle);
                                         ALOG("picker open: city=%s idle=%d",

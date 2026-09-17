@@ -29,7 +29,9 @@ S3GenPicker *s3_picker_new(S3PickDrawText draw_text, void *text_ud);
 void        s3_picker_free(S3GenPicker *p);
 
 /* 打开选择器：为 city 城的 title 指令挑选执行者。
- * only_idle != 0 时只列"本月未行动"者（默认行为）；置 0 可看全员（守城支援等场合）。 */
+ * ⚠ 定稿 A2 口径：**本月已行动的武将在列表里置灰且不可选**（不是隐藏）——
+ * 故默认调用方应传 only_idle = 0（列全部）；only_idle != 0 表示"只列本月未行动者"
+ * （守城支援等需要"看全员"之外的过滤场合才用）。 */
 void s3_picker_open(S3GenPicker *p, const S3Roster *roster, const char *city,
                     const char *title, int only_idle);
 void s3_picker_close(S3GenPicker *p);
