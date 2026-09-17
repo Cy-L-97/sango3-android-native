@@ -404,9 +404,18 @@ static void draw_hud(S3Strategy *s, Sango3Canvas *cv) {
             const int32_t vx = px + 35 * z;
             const int32_t rw = 61 * z;
             const int32_t rh = 16 * z;
+            /* 定稿 F1/F2：非我方且**未在調查有效期内** → 只露 城市/太守，
+             * 其余数值一律不显示（否则「調查」这个指令就没有存在意义了）。 */
+            const int known = s3_strategy_city_known(s, s->sel);
             char buf[64];
             for (int r = 0; r < 9; ++r) {
                 buf[0] = '\0';
+                if (!known && r >= 3) {                 /* 金錢/人口/開發/武將/兵士/友好 */
+                    snprintf(buf, sizeof buf, "—");
+                    s->draw_text(s->text_ud, cv, buf, vx + 4, py + row_y[r] * z, rw - 4, rh,
+                                 0x808080u, fnt, 0x4u);
+                    continue;
+                }
                 switch (r) {
                 case 0: snprintf(buf, sizeof buf, "%s", c->name); break;
                 case 1: snprintf(buf, sizeof buf, "%s", c->has_detail && c->det.lord[0]
@@ -426,6 +435,16 @@ static void draw_hud(S3Strategy *s, Sango3Canvas *cv) {
                 uint32_t rgb = (r == 0) ? 0xFFD65Au : 0xDCDCDCu;
                 s->draw_text(s->text_ud, cv, buf, vx + 4, py + row_y[r] * z, rw - 4, rh,
                              rgb, fnt, 0x4u);
+            }
+            /* 面板下方一小条状态（面板自身九行已占满，故画在面板外） */
+            if (!c->mine) {
+                int until = s3_strategy_city_invest_until(s, s->sel);
+                snprintf(buf, sizeof buf, known ? "已調查 · 有效至第 %d 月" : "未調查（計略 → 調查）",
+                         until);
+                const int32_t ny = py + s->panel.height * z + 2;
+                sango3_canvas_fill(cv, px, ny, s->panel.width * z, 18 * z, 12, 14, 24);
+                s->draw_text(s->text_ud, cv, buf, px + 6, ny, s->panel.width * z - 12, 18 * z,
+                             known ? 0x9FE0A0u : (uint32_t)0xD0A060u, fnt, 0x4u);
             }
         }
     }
@@ -482,4 +501,26 @@ const S3CityDetail *s3_strategy_city_detail(const S3Strategy *s, int idx) {
 S3CityDetail *s3_strategy_city_detail_mut(S3Strategy *s, int idx) {
     return (s && idx >= 0 && idx < s->n_cities && s->city[idx].has_detail)
          ? &s->city[idx].det : NULL;
+}
+
+/* ------------------------- 調查 / 情報（定稿 F1/F2） ------------------------- */
+int s3_strategy_city_known(const S3Strategy *s, int idx) {
+    if (!s || idx < 0 || idx >= s->n_cities) return 0;
+    if (s->city[idx].mine) return 1;                 /* 我方城池永远可见 */
+    if (!s->city[idx].has_detail) return 0;
+    const int until = s->city[idx].det.invest_until;
+    return (until > 0 && s->month <= until) ? 1 : 0; /* 仍在有效期内 */
+}
+
+int s3_strategy_city_investigate(S3Strategy *s, int idx, int until_month) {
+    if (!s || idx < 0 || idx >= s->n_cities || !s->city[idx].has_detail) return -1;
+    if (s->city[idx].mine) return -1;                /* 我方城无需调查 */
+    s->city[idx].det.invest_until = until_month > 0 ? until_month : 0;
+    return 0;
+}
+
+int s3_strategy_city_invest_until(const S3Strategy *s, int idx) {
+    if (!s || idx < 0 || idx >= s->n_cities || !s->city[idx].has_detail) return 0;
+    if (s->city[idx].mine) return 0;
+    return s->city[idx].det.invest_until;
 }

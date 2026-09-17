@@ -60,6 +60,18 @@ int  s3_roster_workers(const S3Roster *r, const char *city,
                        int only_idle, int *out, int out_max);
 int  s3_roster_worker_count(const S3Roster *r, const char *city, int only_idle);
 
+/* 我方**全军**可执行者（跨城，排除在野）—— 定稿 F1「調查」用：
+ * 調査的目标是**非我方城池**，执行者只能从我自己的人里挑（2026-09-17 用户确认：
+ * "我方全軍任選"，故列表要能跨城）。 */
+int  s3_roster_workers_mine_all(const S3Roster *r, int only_idle,
+                                int *out, int out_max);
+int  s3_roster_worker_count_mine_all(const S3Roster *r, int only_idle);
+
+/* 某城中的武将（**不分敌我**，排除在野）—— 定稿 F2「情報」用（看敌将详情）。 */
+int  s3_roster_officers_in_city(const S3Roster *r, const char *city,
+                                int *out, int out_max);
+int  s3_roster_officer_count_in_city(const S3Roster *r, const char *city);
+
 /* 单将带兵上限（等级×40，等级上限 30） */
 int  s3_officer_troop_limit(const S3Officer *o);
 

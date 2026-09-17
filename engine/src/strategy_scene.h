@@ -49,6 +49,11 @@ typedef struct {
     /* 士气（定稿 J4/C2）：**城池整体**，上限 100、初值 70、每回合不衰减；
      * 只在 战斗撤退 / 不敢单挑 / 受军师技影响 时下降，战斗胜利上升。 */
     int32_t morale;
+
+    /* 調查有效期（定稿 F1/F2）：**非我方**城池的详情要經「計略 → 調查」才看得见，
+     * 有效期 6 个月（含调查当月 → invest_until = 调查月 + 5）。
+     * 0 = 从未调查；我方城池不需要调查（调用方把 mine 城直接判为 known）。 */
+    int32_t invest_until;
 } S3CityDetail;
 
 typedef struct S3Strategy S3Strategy;
@@ -114,10 +119,19 @@ void s3_strategy_on_click(S3Strategy *s, int32_t lx, int32_t ly);
 /* 拖动地图（长按拖动时调用，dx/dy 为逻辑像素增量） */
 void s3_strategy_pan(S3Strategy *s, int32_t dx, int32_t dy);
 
-int         s3_strategy_selected(const S3Strategy *s);      /* 下标，-1 = 无 */
-int         s3_strategy_count(const S3Strategy *s);
+int  s3_strategy_selected(const S3Strategy *s);      /* 下标，-1 = 无 */
+int  s3_strategy_count(const S3Strategy *s);
 const char *s3_strategy_city_name(const S3Strategy *s, int idx);
 int         s3_strategy_city_mine(const S3Strategy *s, int idx);
+
+/* -------- 調查 / 情報（定稿 F1/F2） --------
+ * known = 我方城池（永远可见）或"非我方但仍在調查有效期内"。
+ * 非 known 的城池只露 城市/太守，其余数值一律不显示（否则調查没有意义）。 */
+int  s3_strategy_city_known(const S3Strategy *s, int idx);
+/* 记一次调查：有效期至 until_month（含）。返回 0 成功。 */
+int  s3_strategy_city_investigate(S3Strategy *s, int idx, int until_month);
+/* 非我方的已调查城 → 有效至该月；未调查/我方 → 0 */
+int  s3_strategy_city_invest_until(const S3Strategy *s, int idx);
 
 #ifdef __cplusplus
 }

@@ -619,6 +619,19 @@ static int          g_month = 1;
 static int          g_pending_group = -1, g_pending_item = -1;
 static char         g_pending_label[32] = "";
 static int          g_pending_city = -1;    /* 已选定、正在挑执行者的城 */
+/* 命令阶段的两个修饰位：
+ *   g_pending_enemy —— 目标必须是**非我方**城池（計略 調查/情報）
+ *   g_pending_query —— 选完武将只**展示情报**，不执行、不消耗月度行动（定稿 F2） */
+static int          g_pending_enemy = 0, g_pending_query = 0;
+
+/* 大地图的按压/拖动状态（原为函数内 static，2026-09-17 提到文件作用域）。
+ * ⚠ **必须在视图切换时复位**：长按（=右键）会先产生一次 lclick 边沿 → drag=1，
+ *   紧接着 rclick 把视图切回朝堂，那次按压的"抬起"永远不会被地图分支处理
+ *   → drag 一直停在 1；等下次再回到地图，第一帧就拿着**旧坐标**触发一次幽灵点击
+ *   （实测：进入「情報」命令阶段时凭空选中了"永安"）。
+ * 对策：切换视图的边沿统一清零。 */
+static int     g_map_drag = 0, g_map_moved = 0, g_map_menu = 0;
+static int32_t g_map_px = -1, g_map_py = -1;
 static S3Roster    *g_roster = NULL;        /* 武将名册（执行者 + 月度行动限制） */
 static S3GenPicker *g_picker = NULL;        /* 执行者选择界面 */
 
@@ -633,13 +646,21 @@ static void admin_say(const char *fmt, ...) {
     ALOG("admin: %s", b);
 }
 
-/* 当前操作的城：优先"选中的城"，朝堂里没有选择 → 落到我方第一座城 */
-static int admin_city_idx(void) {
-    int idx = s3_strategy_selected(g_ast);
-    if (idx >= 0) return idx;
-    for (int i = 0; i < s3_strategy_count(g_ast); ++i)
-        if (s3_strategy_city_mine(g_ast, i)) return i;
-    return -1;
+/* 註：原先这里有个 admin_city_idx()（"选中的城 → 否则我方第一座城"）。
+ * 計略 的 調查/情報 在 2026-09-17 改成"选非我方城"的挂起流程后它失去了调用点，
+ * 已删除（选中城改由 g_pending_city 携带）。后续 移動/人才 若需要"当前城"语义，
+ * 从 git 历史取回即可。 */
+
+/* 情報（定稿 F2）：展示一名武将/军师的详情（目标可为**敌将**）。
+ * 纯查询 —— 不消耗月度行动、不需要执行者（定稿 F2 原文未提执行者，
+ * 与 F1「指派一名武将/军师执行」的写法不同，故按"纯查询"实现，实测再校准）。 */
+static void admin_show_officer(int off_idx) {
+    const S3Officer *o = (off_idx >= 0) ? s3_roster_at(g_roster, off_idx) : NULL;
+    if (!o) { admin_say("情報：查無此人"); return; }
+    admin_say("情報：%s · 所屬 %s · 武力 %d · 智力 %d · 等級 %d · 帶兵上限 %d · %s",
+              o->name, o->city[0] ? o->city : "（無屬地）",
+              o->str, o->intel, o->level, s3_officer_troop_limit(o),
+              o->wild ? "在野" : (o->mine ? "我方" : "他方"));
 }
 
 /* 在选定城池上、由选定的执行者执行待执行命令。
@@ -696,6 +717,14 @@ static void admin_execute_pending(int idx, int off_idx) {
         cd->morale += up; if (cd->morale > 100) cd->morale = 100;
         admin_say("%s「訓練」：%s（武%d 級%d）士氣 +%d → %d（城池整體）",
                   cname, who_s, sq, lv, up, cd->morale);
+    } else if (g_pending_group == 4 && g_pending_item == 0) {       /* 調查（定稿 F1） */
+        /* 有效期 6 个月：含调查当月 → 有效至 当月+5。到期后城池详情重新变回"未調查"。 */
+        const int until = g_month + 5;
+        if (s3_strategy_city_investigate(g_ast, idx, until) == 0)
+            admin_say("%s「調查」：%s（智%d 級%d）完成 —— 城池詳情可見，有效至第 %d 月",
+                      cname, who_i, iq, lv, until);
+        else
+            admin_say("%s「調查」失敗（我方城池無需調查）", cname);
     }
     if (om) om->acted = 1;      /* 定稿 A2：本月不可再执行（回朝堂后可看到其置灰） */
     /* 不自动返回朝堂，可连续选城（定稿 A5） */
@@ -707,6 +736,7 @@ static void admin_cancel_pending(void) {
     admin_say("已取消「%s」", g_pending_label);
     g_pending_group = g_pending_item = -1;
     g_pending_label[0] = '\0';
+    g_pending_enemy = g_pending_query = 0;
     s3_strategy_set_banner(g_ast, "");
     s3_admin_set_visible(g_adm, 1);
 }
@@ -739,18 +769,31 @@ static void goto_main_menu(App *app, int *mode) {
 /* 朝堂点「需要城池+执行者」的命令 → 挂起，切大地图等玩家选城。
  * 菜单**收起**（否则遮住城池没法选，2026-09-16 用户实测反馈），
  * 引导文案走信息条（banner）。 */
+static int admin_set_pending_x(int group, int item, const char *label,
+                               int want_enemy, int query);
 static int admin_set_pending(int group, int item, const char *label) {
+    return admin_set_pending_x(group, item, label, 0, 0);
+}
+
+/* 同上，带修饰位：
+ *   want_enemy = 1 → 只接受**非我方**城池（定稿 F1/F2 的計略）
+ *   query      = 1 → 选完只展示情报，不执行命令、不消耗执行者行动（定稿 F2） */
+static int admin_set_pending_x(int group, int item, const char *label,
+                               int want_enemy, int query) {
     g_pending_group = group; g_pending_item = item;
+    g_pending_enemy = want_enemy ? 1 : 0;
+    g_pending_query = query ? 1 : 0;
     snprintf(g_pending_label, sizeof g_pending_label, "%s", label);
     g_admin_map = 1;
     s3_admin_set_visible(g_adm, 0);          /* 收起菜单 */
     s3_admin_set_hint(g_adm, "");
     {
-        char b[128];
-        snprintf(b, sizeof b, "「%s」命令階段：請點選我方城池（可連續執行，右鍵返回朝堂）", label);
+        char b[168];
+        snprintf(b, sizeof b, "「%s」命令階段：請點選%s城池（可連續執行，長按返回朝堂）",
+                 label, want_enemy ? "**非我方**" : "我方");
         s3_strategy_set_banner(g_ast, b);
     }
-    admin_say("進入「%s」命令階段：請點選我方城池", label);
+    admin_say("進入「%s」命令階段：請點選%s城池", label, want_enemy ? "非我方" : "我方");
     return 1;
 }
 
@@ -794,32 +837,14 @@ static int admin_cmd_cb(void *ud, int group, int item, const char *label) {
         return 1;
     }
 
-    /* ---- 計略的調查/情報是纯查询，即时返回 ---- */
+    /* ---- 計略（定稿 F1/F2）：三个指令都是"选**非我方**城池"的流程 ----
+     * 調査 = 我方全軍任選执行者 → 解锁该城详情，有效期 6 个月
+     * 情報 = 在**已调查（有效期内）**的城里点一名武将 → 看其详情（纯查询，不消耗行动）
+     * 離間 = 尚未实现 */
     if (group == 4) {
-        if (item == 0) {                                    /* 調查 = 当前城详情 */
-            int idx = admin_city_idx();
-            const S3CityDetail *cd = (idx >= 0) ? s3_strategy_city_detail(g_ast, idx) : NULL;
-            const char *cname = (idx >= 0) ? s3_strategy_city_name(g_ast, idx) : NULL;
-            if (!cd || !cname) { admin_say("沒有可查詢的城池"); return 1; }
-            admin_say("%s：太守 %s · 人口 %d · 金錢 %d · 開發 %d · 武將 %d · 兵士 %d · 友好 %d",
-                      cname, cd->lord, cd->people, cd->money, cd->dev,
-                      cd->n_generals, cd->reserve, cd->friendliness);
-            return 1;
-        }
-        if (item == 2) {                                    /* 情報 = 我方全局概况 */
-            long long money = 0, people = 0, troop = 0;
-            int cities = 0, gens = 0;
-            for (int i = 0; i < s3_strategy_count(g_ast); ++i) {
-                const S3CityDetail *d = s3_strategy_city_detail(g_ast, i);
-                if (!d || !s3_strategy_city_mine(g_ast, i)) continue;
-                ++cities; gens += d->n_generals;
-                money += d->money; people += d->people; troop += d->reserve;
-            }
-            admin_say("我方概况：%d 城 · %d 將 · 金錢 %lld · 人口 %lld · 兵士 %lld",
-                      cities, gens, money, people, troop);
-            return 1;
-        }
-        return 0;                                           /* 離間 */
+        if (item == 0) return admin_set_pending_x(4, 0, label, 1, 0);   /* 調查 */
+        if (item == 2) return admin_set_pending_x(4, 2, label, 1, 1);   /* 情報 */
+        return 0;                                                       /* 離間 */
     }
 
     /* ---- 需要城池 + 执行者的命令 → 挂起，切大地图选城（原版指令流） ----
@@ -1284,6 +1309,9 @@ int main(int argc, char **argv) {
                 static int last_court = -1;
                 if (last_court != court) {
                     if (court) s3_admin_set_visible(g_adm, 1);
+                    /* 视图切换 → 地图按压状态清零（否则会带着旧坐标"幽灵点击"，见上面注释） */
+                    g_map_drag = g_map_moved = g_map_menu = 0;
+                    g_map_px = g_map_py = -1;
                     last_court = court;
                 }
             }
@@ -1322,12 +1350,22 @@ int main(int argc, char **argv) {
                         pk_down = 0;
                         s3_picker_on_click(g_picker, pk_x, pk_y, &off, &cancel);
                         if (off >= 0) {
-                            admin_execute_pending(g_pending_city, off);
-                            char b[168];
-                            snprintf(b, sizeof b,
-                                     "「%s」命令階段：已執行，可繼續點選其它城池（長按返回朝堂）",
-                                     g_pending_label);
-                            s3_strategy_set_banner(g_ast, b);
+                            if (g_pending_query) {
+                                /* 定稿 F2「情報」：纯查询 —— 展示该武将详情，
+                                 * 不消耗月度行动、不结束命令阶段（可继续看别人） */
+                                admin_show_officer(off);
+                                char b[168];
+                                snprintf(b, sizeof b,
+                                         "「情報」：已查看，可繼續點選其它城池（長按返回朝堂）");
+                                s3_strategy_set_banner(g_ast, b);
+                            } else {
+                                admin_execute_pending(g_pending_city, off);
+                                char b[168];
+                                snprintf(b, sizeof b,
+                                         "「%s」命令階段：已執行，可繼續點選其它城池（長按返回朝堂）",
+                                         g_pending_label);
+                                s3_strategy_set_banner(g_ast, b);
+                            }
                             g_pending_city = -1;
                         } else if (cancel) {
                             admin_cancel_pending();
@@ -1354,26 +1392,26 @@ int main(int argc, char **argv) {
             } else if (!court) {
                 /* 拖动查看地图：按下→移动（超阈值算拖动，地图随手走）→
                  * 抬起且未移动过才算点击选城（避免拖动误选）。
-                 * ⚠ 落在行政主選單上的按压一律归菜单，既不拖动地图也不选城。 */
-                static int sdrag = 0, smoved = 0, smenu = 0;
-                static int32_t spx = -1, spy = -1;
+                 * ⚠ 落在行政主選單上的按压一律归菜单，既不拖动地图也不选城。
+                 * 状态用文件作用域的 g_map_*（视图切换时要能复位，见其定义处注释）。 */
                 if (pt.lclick) {
-                    smenu = s3_admin_hit(g_adm, (int32_t)pt.lx, (int32_t)pt.ly) ? 1 : 0;
-                    sdrag = 1; smoved = 0;
-                    spx = (int32_t)pt.lx; spy = (int32_t)pt.ly;
-                } else if (pt.ldown && sdrag && !smenu) {
-                    int32_t dx = (int32_t)pt.lx - spx;
-                    int32_t dy = (int32_t)pt.ly - spy;
+                    g_map_menu = s3_admin_hit(g_adm, (int32_t)pt.lx, (int32_t)pt.ly) ? 1 : 0;
+                    g_map_drag = 1; g_map_moved = 0;
+                    g_map_px = (int32_t)pt.lx; g_map_py = (int32_t)pt.ly;
+                } else if (pt.ldown && g_map_drag && !g_map_menu) {
+                    int32_t dx = (int32_t)pt.lx - g_map_px;
+                    int32_t dy = (int32_t)pt.ly - g_map_py;
                     if (dx > 1 || dx < -1 || dy > 1 || dy < -1) {
                         s3_strategy_pan_view(st, -dx, -dy);   /* 地图反向移动 */
-                        spx = (int32_t)pt.lx; spy = (int32_t)pt.ly;
-                        smoved = 1;
+                        g_map_px = (int32_t)pt.lx; g_map_py = (int32_t)pt.ly;
+                        g_map_moved = 1;
                     }
                 }
-                if (!pt.ldown && sdrag) {
-                    sdrag = 0;
-                    if (!smoved) {
-                        if (smenu) s3_admin_on_click(g_adm, spx, spy);
+                if (!pt.ldown && g_map_drag) {
+                    g_map_drag = 0;
+                    if (!g_map_moved) {
+                        const int32_t spx = g_map_px, spy = g_map_py;
+                        if (g_map_menu) s3_admin_on_click(g_adm, spx, spy);
                         else {
                             s3_strategy_on_click(st, spx, spy);
                             /* 指令流：命令阶段点城 → 我方城执行；**不返回朝堂**，
@@ -1382,34 +1420,66 @@ int main(int argc, char **argv) {
                             if (g_pending_group >= 0) {
                                 int cidx = s3_strategy_selected(st);
                                 if (cidx >= 0) {
-                                    if (s3_strategy_city_mine(st, cidx)) {
-                                        /* 定稿 A1：选城后 → 打开执行者选择界面 */
-                                        const char *cn = s3_strategy_city_name(st, cidx);
-                                        int idle = s3_roster_worker_count(g_roster, cn, 1);
+                                    const char *cn = s3_strategy_city_name(st, cidx);
+                                    const int mine = s3_strategy_city_mine(st, cidx);
+                                    /* 目标阵营校验：計略 需非我方城；其余需我方城 */
+                                    if (g_pending_enemy ? mine : !mine) {
+                                        admin_say(g_pending_enemy
+                                                  ? "「%s」的目標必須是**非我方**城池"
+                                                  : "「%s」只能對我方城池執行",
+                                                  g_pending_label);
+                                    } else if (g_pending_query) {
+                                        /* 定稿 F2「情報」：前提 —— 该城在调查有效期内 */
+                                        if (!s3_strategy_city_known(st, cidx)) {
+                                            admin_say("「情報」需先「調查」%s（調查有效期 6 個月）",
+                                                      cn ? cn : "?");
+                                        } else {
+                                            int cnt = s3_roster_officer_count_in_city(g_roster, cn);
+                                            g_pending_city = cidx;
+                                            s3_picker_open(g_picker, g_roster, cn,
+                                                           g_pending_label, 0, S3_PICK_ANY_CITY);
+                                            char b[168];
+                                            snprintf(b, sizeof b,
+                                                     "「情報」：請選擇要查看的武將/軍師（%s · 共 %d 人）",
+                                                     cn ? cn : "?", cnt);
+                                            s3_strategy_set_banner(g_ast, b);
+                                            printf("picker open(info): city=%s n=%d\n",
+                                                   cn ? cn : "?", cnt);
+                                            ALOG("picker open(info): city=%s n=%d",
+                                                 cn ? cn : "?", cnt);
+                                        }
+                                    } else {
+                                        /* 定稿 A1：选城后 → 打开执行者选择界面。
+                                         * 調査（計略）目标是敌城 → 执行者从**我方全軍**里挑；
+                                         * 其余指令的执行者就是该城的武将。 */
+                                        const int my_all = (g_pending_group == 4 && g_pending_item == 0);
+                                        int idle = my_all
+                                                 ? s3_roster_worker_count_mine_all(g_roster, 1)
+                                                 : s3_roster_worker_count(g_roster, cn, 1);
                                         g_pending_city = cidx;
                                         /* only_idle = 0：**列出全部**，本月已行动者由界面置灰
                                          * 且不可点（定稿 A2 原文是"置灰"，不是"隐藏"） */
-                                        s3_picker_open(g_picker, g_roster, cn,
-                                                       g_pending_label, 0);
-                                        printf("picker open: city=%s idle=%d\n",
-                                               cn ? cn : "?", idle);
-                                        ALOG("picker open: city=%s idle=%d",
-                                             cn ? cn : "?", idle);
+                                        s3_picker_open(g_picker, g_roster, my_all ? NULL : cn,
+                                                       g_pending_label, 0,
+                                                       my_all ? S3_PICK_MY_ALL : S3_PICK_MY_CITY);
+                                        printf("picker open: city=%s idle=%d my_all=%d\n",
+                                               cn ? cn : "?", idle, my_all);
+                                        ALOG("picker open: city=%s idle=%d my_all=%d",
+                                             cn ? cn : "?", idle, my_all);
                                         char b[168];
                                         /* 可执行人数直接写进横幅：0 人时用户一眼能分清
                                          * "此地無武將（關隘）/ 本月均已行動"（不再是 BUG-1 那种空） */
                                         snprintf(b, sizeof b,
                                                  "「%s」：請選擇執行此指令的武將/軍師（%s · 可執行 %d 人）",
-                                                 g_pending_label, cn ? cn : "?", idle);
+                                                 g_pending_label,
+                                                 my_all ? "我方全軍" : (cn ? cn : "?"), idle);
                                         s3_strategy_set_banner(g_ast, b);
-                                    } else {
-                                        admin_say("「%s」只能對我方城池執行", g_pending_label);
                                     }
                                 }
                             }
                         }
                     }
-                    smenu = 0;
+                    g_map_menu = 0;
                 }
             } else {
                 /* 朝堂：点击只归行政主選單 */

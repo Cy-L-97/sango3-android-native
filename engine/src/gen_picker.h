@@ -25,15 +25,29 @@ typedef void (*S3PickDrawText)(void *ud, Sango3Canvas *cv, const char *utf8,
 
 typedef struct S3GenPicker S3GenPicker;
 
+/* 选择范围（不同指令的候选来源不同）：
+ *   MY_CITY   —— 某座**我方城**的可执行武将（一般内政/军事指令，定稿 A1）
+ *   MY_ALL    —— 我方**全军**（跨城）可执行者 —— 定稿 F1「調查」：目标是敌城，
+ *                执行者只能从自己人里挑（2026-09-17 用户确认"我方全軍任選"）
+ *   ANY_CITY  —— 指定城里的**全部武将（不分敌我）** —— 定稿 F2「情報」：看敌将详情。
+ *                此模式下不按"本月已行动"置灰（看情报不消耗行动）。 */
+typedef enum {
+    S3_PICK_MY_CITY  = 0,
+    S3_PICK_MY_ALL   = 1,
+    S3_PICK_ANY_CITY = 2
+} S3PickScope;
+
 S3GenPicker *s3_picker_new(S3PickDrawText draw_text, void *text_ud);
 void        s3_picker_free(S3GenPicker *p);
 
-/* 打开选择器：为 city 城的 title 指令挑选执行者。
+/* 打开选择器：为 city 城的 title 指令挑选执行者（city 可为 NULL/空 =
+ * 不限定城池，配合 scope = S3_PICK_MY_ALL 表示"我方全军"）。
+ *
  * ⚠ 定稿 A2 口径：**本月已行动的武将在列表里置灰且不可选**（不是隐藏）——
  * 故默认调用方应传 only_idle = 0（列全部）；only_idle != 0 表示"只列本月未行动者"
- * （守城支援等需要"看全员"之外的过滤场合才用）。 */
+ * （守城支援等需要"看全员"之外的过滤场合才用）。S3_PICK_ANY_CITY 不受此约束。 */
 void s3_picker_open(S3GenPicker *p, const S3Roster *roster, const char *city,
-                    const char *title, int only_idle);
+                    const char *title, int only_idle, S3PickScope scope);
 void s3_picker_close(S3GenPicker *p);
 int  s3_picker_active(const S3GenPicker *p);
 const char *s3_picker_city(const S3GenPicker *p);

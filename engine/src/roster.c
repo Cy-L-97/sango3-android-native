@@ -84,6 +84,56 @@ int s3_roster_worker_count(const S3Roster *r, const char *city, int only_idle) {
     return k;
 }
 
+int s3_roster_workers_mine_all(const S3Roster *r, int only_idle,
+                               int *out, int out_max) {
+    if (!r || !out || out_max <= 0) return 0;
+    int k = 0;
+    for (int i = 0; i < r->n && k < out_max; ++i) {
+        const S3Officer *o = &r->o[i];
+        if (!o->mine || o->wild) continue;
+        if (only_idle && o->acted) continue;
+        out[k++] = i;
+    }
+    return k;
+}
+
+int s3_roster_worker_count_mine_all(const S3Roster *r, int only_idle) {
+    if (!r) return 0;
+    int k = 0;
+    for (int i = 0; i < r->n; ++i) {
+        const S3Officer *o = &r->o[i];
+        if (!o->mine || o->wild) continue;
+        if (only_idle && o->acted) continue;
+        ++k;
+    }
+    return k;
+}
+
+int s3_roster_officers_in_city(const S3Roster *r, const char *city,
+                               int *out, int out_max) {
+    if (!r || !city || !out || out_max <= 0) return 0;
+    int k = 0;
+    for (int i = 0; i < r->n && k < out_max; ++i) {
+        const S3Officer *o = &r->o[i];
+        if (o->wild) continue;                 /* 在野不算该城常驻武将 */
+        if (strcmp(o->city, city)) continue;   /* 敌我不限 */
+        out[k++] = i;
+    }
+    return k;
+}
+
+int s3_roster_officer_count_in_city(const S3Roster *r, const char *city) {
+    if (!r || !city) return 0;
+    int k = 0;
+    for (int i = 0; i < r->n; ++i) {
+        const S3Officer *o = &r->o[i];
+        if (o->wild) continue;
+        if (strcmp(o->city, city)) continue;
+        ++k;
+    }
+    return k;
+}
+
 int s3_officer_troop_limit(const S3Officer *o) {
     if (!o) return 0;
     int lv = o->level;
