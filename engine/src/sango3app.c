@@ -1445,7 +1445,10 @@ int main(int argc, char **argv) {
             {
                 static int last_court = -1;
                 if (last_court != court) {
-                    if (court) s3_admin_set_visible(g_adm, 1);
+                    /* 朝堂 = 内政阶段 → 显示行政主選單；大地图 = 看局面/选城 → **收起**。
+                     * 2026-09-17 用户实机反馈：走「休息→確定」进地图后菜单又冒出来了
+                     * （原先只在切进朝堂时 set_visible(1)，切到地图时没复位）。 */
+                    s3_admin_set_visible(g_adm, court ? 1 : 0);
                     /* 视图切换 → 地图按压状态清零（否则会带着旧坐标"幽灵点击"，见上面注释） */
                     g_map_drag = g_map_moved = g_map_menu = 0;
                     g_map_px = g_map_py = -1;

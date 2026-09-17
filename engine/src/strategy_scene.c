@@ -389,10 +389,10 @@ void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
 }
 
 /* ----------------------------------------------------- I1：城池插所属势力旗
- * 位置 = **城池点位本身**（x,y = 图标中心，与选中框同一中心点）；
- * 旗面按图标尺寸等比放大，**旗上书势力代表字**（君主名首字，如曹操势力写「曹」）——
- * 2026-09-17 用户实机指正：原先旗在图标左下外侧，且只有颜色区分，与原文不符。
- * 颜色仍按 Flag 号取自 FLAG_PAL，作为第二重区分 + 我方金边。 */
+ * 位置（2026-09-17 用户二次指正）：**旗杆底下插在城池点位，旗面立在城池上方** ——
+ * 绝不能整面旗盖住城池图标（第一版把旗画在城池中心，把城整个糊掉了）。
+ * 旗面书势力代表字（君主名首字，如曹操势力写「曹」），颜色仍按 Flag 号取 FLAG_PAL
+ * 作第二重区分，我方城加金边。 */
 static void draw_city_flag(S3Strategy *s, Sango3Canvas *cv, int32_t x, int32_t y,
                            int32_t hw, int32_t hh, int flag, int mine,
                            const char *lord) {
@@ -400,15 +400,18 @@ static void draw_city_flag(S3Strategy *s, Sango3Canvas *cv, int32_t x, int32_t y
     const uint8_t *c = FLAG_PAL[flag];
 
     int32_t fw = hw * 2;                        /* 旗面宽 ≈ 城池图标宽 */
-    if (fw < 20) fw = 20;
-    if (fw > 42) fw = 42;                       /* 上限：别盖住相邻城 */
+    if (fw < 18) fw = 18;
+    if (fw > 34) fw = 34;                       /* 上限：别盖到相邻城 */
     int32_t fh = (fw * 7) / 10;
-    if (fh < 14) fh = 14;
-    const int32_t fx = x - fw / 2;              /* 与选中框同中心 */
-    const int32_t fy = y - fh / 2;
+    if (fh < 12) fh = 12;
 
-    /* 旗杆：从旗面下沿往图标下方伸出一点，做出"插在城上"的观感 */
-    sango3_canvas_fill(cv, x - 1, fy + fh, 2, hh / 2 + 3, 74, 56, 34);
+    const int32_t fy = y - hh - fh - 3;         /* 旗面**整体在图标上沿之上** */
+    const int32_t fx = x - fw / 2;              /* 水平居中于城池点位 */
+    const int32_t pole_top = fy + 2;            /* 杆顶略低于旗面上沿，露一点旗杆头 */
+
+    /* 旗杆：从旗面往下插到**城池点位本身**（x,y） */
+    sango3_canvas_fill(cv, x - 1, pole_top, 2, y - pole_top, 74, 56, 34);
+    sango3_canvas_fill(cv, x - 2, y - 4, 4, 4, 56, 42, 26);   /* 杆底加粗一点，像插进城里 */
 
     sango3_canvas_fill(cv, fx, fy, fw, fh, c[0], c[1], c[2]);               /* 旗面 */
     sango3_canvas_frame(cv, fx, fy, fw, fh, 1,
@@ -423,7 +426,7 @@ static void draw_city_flag(S3Strategy *s, Sango3Canvas *cv, int32_t x, int32_t y
         if (c0 >= 0xF0) n = 4; else if (c0 >= 0xE0) n = 3; else if (c0 >= 0xC0) n = 2;
         if (n > (int)sizeof g - 1) n = (int)sizeof g - 1;
         memcpy(g, lord, (size_t)n); g[n] = '\0';
-        const int fnt = (fh >= 22) ? 2 : 1;     /* 20px / 16px 两档，随旗面高度选 */
+        const int fnt = (fh >= 20) ? 2 : 1;     /* 20px / 16px 两档，随旗面高度选 */
         s->draw_text(s->text_ud, cv, g, fx, fy, fw, fh, 0x101010u, fnt, 0x8u | 0x4u);
     }
 }

@@ -23,13 +23,17 @@
 #define LP_BOTTOM_H    34
 #define LP_BTN_W       74
 #define LP_BTN_H       24
-/* 列 x 偏移（相对面板左）：君主 / 相 / 武 / 智 / 忠 / 士 */
-#define LP_COL_NAME    8
-#define LP_COL_PERS  100
-#define LP_COL_STR   144
-#define LP_COL_INTEL 188
-#define LP_COL_JUST  228
-#define LP_COL_MORAL 268
+/* 列 x 偏移（相对面板左）：君主 / 武 / 智 / 忠 / 士
+ * ⚠ 2026-09-17 用户裁决（对照清单 C11）：**原版的「忠」就是忠诚度、「士」就是士气**；
+ *   **相性（Personality）与义理（Justice）都是隐藏属性，界面不展示**（仅内部用于
+ *   招募/离间/招降的判定）。故本表去掉原来的「相」列。
+ *   忠诚度是运行时值（数据层无字段）→ 初值取**义理**（实测：呂布 27 / 關羽·夏侯惇 100，
+ *   正好对应甲文档"吕布剩 30 忠诚就投降、夏侯惇要等到个位数"的口径）。 */
+#define LP_COL_NAME    6        /* 名字列最宽（公孫瓚/夏侯惇 等三字名要放得下） */
+#define LP_COL_STR    80
+#define LP_COL_INTEL 114
+#define LP_COL_JUST  148
+#define LP_COL_MORAL 182
 
 #define COL_PANEL   12, 14, 24
 #define COL_FRAME   150, 130, 80
@@ -166,16 +170,13 @@ void s3_lordpick_render(S3LordPick *lp, Sango3Canvas *cv) {
         lp->draw_text(lp->text_ud, cv, "選擇君主", lp->lx + LP_COL_NAME, lp->ly,
                       lp->lw - 16, LP_TITLE_H, COL_TITLE, fnt, 0x4u);
 
-        /* 表头：君主 / 相 / 武 / 智 / 忠 / 士
-         * ⚠「相」= 相性（`General01.ini` 的 Personality）—— 2026-09-17 用户核查：
-         *   原版没有独立的"声望"数值系统，君主列表里的那一列就是**相性**；
-         *   势力级的「威望」是运行时值（见定稿 L 区），不在本表。 */
+        /* 表头：君主 / 武 / 智 / 忠 / 士（口径见文件头 LP_COL_* 注释） */
         const int32_t hy = lp->ly + LP_TITLE_H;
-        struct { const char *t; int x; } H[6] = {
-            { "君主", LP_COL_NAME }, { "相", LP_COL_PERS }, { "武", LP_COL_STR },
-            { "智", LP_COL_INTEL },  { "忠", LP_COL_JUST }, { "士", LP_COL_MORAL }
+        struct { const char *t; int x; } H[5] = {
+            { "君主", LP_COL_NAME }, { "武", LP_COL_STR }, { "智", LP_COL_INTEL },
+            { "忠", LP_COL_JUST },   { "士", LP_COL_MORAL }
         };
-        for (int i = 0; i < 6; ++i)
+        for (int i = 0; i < 5; ++i)
             lp->draw_text(lp->text_ud, cv, H[i].t, lp->lx + H[i].x, hy,
                           40, LP_HEAD_H, 0xB0C4E0u, fnt, 0x4u);
 
@@ -192,13 +193,12 @@ void s3_lordpick_render(S3LordPick *lp, Sango3Canvas *cv) {
             uint32_t col = s3_kingdom_lord_custom(lp->k, idx) ? COL_MINE
                          : (idx == lp->sel ? COL_SEL : COL_TEXT);
             lp->draw_text(lp->text_ud, cv, s3_kingdom_lord_name(lp->k, idx),
-                          x + LP_COL_NAME, y, 88, h, col, fnt, 0x4u);
-            snprintf(buf, sizeof buf, "%d", s3_kingdom_lord_personality(lp->k, idx));
-            lp->draw_text(lp->text_ud, cv, buf, x + LP_COL_PERS, y, 40, h, col, fnt, 0x4u);
+                          x + LP_COL_NAME, y, LP_COL_STR - LP_COL_NAME - 4, h, col, fnt, 0x4u);
             snprintf(buf, sizeof buf, "%d", s3_kingdom_lord_str(lp->k, idx));
             lp->draw_text(lp->text_ud, cv, buf, x + LP_COL_STR, y, 40, h, col, fnt, 0x4u);
             snprintf(buf, sizeof buf, "%d", s3_kingdom_lord_intel(lp->k, idx));
             lp->draw_text(lp->text_ud, cv, buf, x + LP_COL_INTEL, y, 40, h, col, fnt, 0x4u);
+            /* 忠 = **忠诚度**（C11 裁决）；运行时值尚未实现 → 暂以义理(Justice)作初值显示 */
             snprintf(buf, sizeof buf, "%d", s3_kingdom_lord_justice(lp->k, idx));
             lp->draw_text(lp->text_ud, cv, buf, x + LP_COL_JUST, y, 40, h, col, fnt, 0x4u);
             snprintf(buf, sizeof buf, "%d", s3_kingdom_lord_morale(lp->k, idx));
@@ -248,8 +248,7 @@ void s3_lordpick_render(S3LordPick *lp, Sango3Canvas *cv) {
                 snprintf(buf, sizeof buf, "%s", s3_kingdom_lord_name(lp->k, idx));
                 lp->draw_text(lp->text_ud, cv, buf, lp->rx + 8, ty, lp->rw - 16, 22,
                               COL_SEL, fnt, 0x4u);
-                snprintf(buf, sizeof buf, "相 %d · 武 %d · 智 %d",
-                         s3_kingdom_lord_personality(lp->k, idx),
+                snprintf(buf, sizeof buf, "武 %d · 智 %d",
                          s3_kingdom_lord_str(lp->k, idx), s3_kingdom_lord_intel(lp->k, idx));
                 lp->draw_text(lp->text_ud, cv, buf, lp->rx + 8, ty + 22, lp->rw - 16, 20,
                               COL_TEXT, fnt, 0x4u);
