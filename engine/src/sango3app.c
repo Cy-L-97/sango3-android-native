@@ -29,6 +29,8 @@
 #include "kingdom_scene.h"
 #include "strategy_scene.h"
 #include "admin_menu.h"
+#include "roster.h"
+#include "gen_picker.h"
 
 #include <SDL.h>
 #include <stdarg.h>
@@ -316,8 +318,7 @@ static const CityBest *cb_get(const CityBest *a, int cap, const char *city) {
 }
 
 static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
-                       const char *my_lord, const char *truth_path) {
-    (void)truth_path;
+                       const char *my_lord, S3Roster *roster) {
     uint32_t len = 0;
     uint8_t *data = pak_get(c, "Setting\\MenuMap.ini", &len);
     if (!data) return -1;
@@ -437,13 +438,18 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
                     buf[k] = '\0';
                     nc_add(gen_n, 96, buf, 1);
                     if (gnm && *gnm) {
+                        int gi_str = 0, gi_intel = 0;
                         for (int g = 0; g < gn; ++g) {
                             if (!strcmp(gname[g], gnm)) {
+                                gi_str = gstr[g]; gi_intel = gintel[g];
                                 cb_take(bint, 96, buf, gnm, gintel[g]);
                                 cb_take(bstr, 96, buf, gnm, gstr[g]);
                                 break;
                             }
                         }
+                        /* 名册：`,野` = 在野（不能作为执行者，只能被招募/搜索） */
+                        int wild = (strstr(v, ",野") != NULL) ? 1 : 0;
+                        if (roster) s3_roster_add(roster, gnm, buf, gi_str, gi_intel, wild);
                     }
                 }
                 s3_ini_free(gi);
@@ -537,10 +543,18 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
             if (bs) { snprintf(det.worker_str, sizeof det.worker_str, "%.31s", bs->who);
                       det.worker_str_val = bs->val; }
         }
+        det.morale = 70;        /* 定稿 J4：士气初值 70、上限 100、每回合不衰减 */
         s3_strategy_set_city_detail(st, n, &det);
         ++n;
     }
     s3_ini_free(ini);
+    /* 名册按城归属标"是否我方"（执行者只在我方城挑） */
+    if (roster) {
+        for (int i = 0; i < s3_strategy_count(st); ++i) {
+            const char *cn = s3_strategy_city_name(st, i);
+            if (cn) s3_roster_mark_city(roster, cn, s3_strategy_city_mine(st, i));
+        }
+    }
     printf("strategy: %d cities (%d mine)\n", n, n_mine);
     ALOG("strategy: %d cities (%d mine)", n, n_mine);
     /* 数据层抽样日志（实机 logcat / PC 控制台可直接核对面板九行取值） */
@@ -604,6 +618,9 @@ static int          g_month = 1;
  * -1 = 无。 */
 static int          g_pending_group = -1, g_pending_item = -1;
 static char         g_pending_label[32] = "";
+static int          g_pending_city = -1;    /* 已选定、正在挑执行者的城 */
+static S3Roster    *g_roster = NULL;        /* 武将名册（执行者 + 月度行动限制） */
+static S3GenPicker *g_picker = NULL;        /* 执行者选择界面 */
 
 static void admin_say(const char *fmt, ...) {
     char b[192];
@@ -625,52 +642,63 @@ static int admin_city_idx(void) {
     return -1;
 }
 
-/* 在选定城池上执行待执行命令。执行者能力口径（2026-09-16 用户口述）：
- *   · 開發/搜索 **不花金钱**，效果量看执行者（该城智力最高者）的智力；
- *   · 徵兵数量看执行者（该城武力最高者）的武力，人口与金钱双耗。 */
-static void admin_execute_pending(int idx) {
+/* 在选定城池上、由选定的执行者执行待执行命令。
+ * 执行者能力口径（定稿 A1/B3/C1/C2/C3）：
+ *   · 開發/搜索 **不花金钱**，效果量看执行者**智力 + 等级**；
+ *   · 徵兵数量看执行者**武力 + 等级**（暂用 等级×40 = 其带兵上限）；
+ *   · 訓練 提升**城池整体士气**、不扣钱，量与武力+等级相关（武力权重大）；
+ *   · 执行完毕该执行者**本月不可再执行**（o->acted = 1，回合结束清空）。 */
+static void admin_execute_pending(int idx, int off_idx) {
     const char *cname = s3_strategy_city_name(g_ast, idx);
     S3CityDetail *cd = s3_strategy_city_detail_mut(g_ast, idx);
     if (!cd || !cname) return;
-    const char *who_i = cd->worker_int[0] ? cd->worker_int : "（无人）";
-    const char *who_s = cd->worker_str[0] ? cd->worker_str : "（无人）";
-    const int   iq    = cd->worker_int_val, sq = cd->worker_str_val;
+
+    const S3Officer *o  = (off_idx >= 0) ? s3_roster_at(g_roster, off_idx) : NULL;
+    S3Officer       *om = (off_idx >= 0) ? s3_roster_mut(g_roster, off_idx) : NULL;
+    /* 没选到人时退化为"该城最佳者"（仅容错，正常流程不会走到） */
+    const char *who_i = o ? o->name : (cd->worker_int[0] ? cd->worker_int : "（無人）");
+    const char *who_s = o ? o->name : (cd->worker_str[0] ? cd->worker_str : "（無人）");
+    const int   iq    = o ? o->intel : cd->worker_int_val;
+    const int   sq    = o ? o->str   : cd->worker_str_val;
+    const int   lv    = o ? o->level : 1;
 
     if (g_pending_group == 0 && g_pending_item == 1) {              /* 搜索 */
-        int roll = rand() % 100, need = 45 + iq / 4;                /* 智力 80 → 65% */
-        if (roll < need) {
+        int need = 45 + iq / 4 + lv * 2;                            /* 智力为主，等级加成 */
+        if (rand() % 100 < need) {
             switch (rand() % 3) {
             case 0: { int gain = 100 + rand() % 200;
                       cd->money += gain;
-                      admin_say("%s城「搜索」：%s（智力%d）發現金錢 +%d", cname, who_i, iq, gain); } break;
+                      admin_say("%s「搜索」：%s（智%d 級%d）發現金錢 +%d", cname, who_i, iq, lv, gain); } break;
             case 1:
-                admin_say("%s城「搜索」：%s（智力%d）發現在野人才（招募未開放）", cname, who_i, iq); break;
+                admin_say("%s「搜索」：%s（智%d 級%d）發現在野人才（招募需相性，未開放）",
+                          cname, who_i, iq, lv); break;
             default:
-                admin_say("%s城「搜索」：%s（智力%d）發現物品（配裝未開放）", cname, who_i, iq); break;
+                admin_say("%s「搜索」：%s（智%d 級%d）發現物品（已入庫，配裝未開放）",
+                          cname, who_i, iq, lv); break;
             }
         } else {
-            admin_say("%s城「搜索」：%s（智力%d）一無所獲", cname, who_i, iq);
+            admin_say("%s「搜索」：%s（智%d 級%d）一無所獲", cname, who_i, iq, lv);
         }
-    } else if (g_pending_group == 0 && g_pending_item == 2) {       /* 開發 */
-        int up = 5 + iq / 5;                                        /* 智力 100 → +25 */
+    } else if (g_pending_group == 0 && g_pending_item == 2) {       /* 開發：不花钱 */
+        int up = 5 + iq / 5 + lv * 2;                               /* 智力 + 等级按比例 */
         cd->dev += up; if (cd->dev > 999) cd->dev = 999;
-        admin_say("%s城「開發」：%s（智力%d）開發度 +%d → %d（決定每月收入與成長）",
-                  cname, who_i, iq, up, cd->dev);
+        admin_say("%s「開發」：%s（智%d 級%d）開發度 +%d → %d", cname, who_i, iq, lv, up, cd->dev);
     } else if (g_pending_group == 1 && g_pending_item == 0) {       /* 徵兵 */
-        int nr = sq * 5, cost = nr / 5;
-        if (nr <= 0) { admin_say("%s城無人可執行「徵兵」", cname); return; }
-        if (cd->people <= nr + 1000) { admin_say("%s城人口不足，徵兵中止（人口 %d）", cname, cd->people); return; }
-        if (cd->money < cost) { admin_say("%s城金錢不足（徵 %d 兵需 %d，當前 %d）", cname, nr, cost, cd->money); return; }
+        int nr = lv * S3_TROOPS_PER_LEVEL;                          /* 定稿 C3：等级×40 */
+        int cost = nr / 5;
+        if (cd->people <= nr + 1000) { admin_say("%s人口不足，徵兵中止（人口 %d）", cname, cd->people); return; }
+        if (cd->money < cost) { admin_say("%s金錢不足（徵 %d 兵需 %d，當前 %d）", cname, nr, cost, cd->money); return; }
         cd->money -= cost; cd->people -= nr; cd->reserve += nr;
-        admin_say("%s城「徵兵」：%s（武力%d）征得 %d 兵（兵士 %d，人口 -%d，金錢 -%d）",
-                  cname, who_s, sq, nr, cd->reserve, nr, cost);
-    } else if (g_pending_group == 1 && g_pending_item == 1) {       /* 訓練 */
-        if (cd->money < 50) { admin_say("%s城金錢不足（訓練需 50）", cname); return; }
-        cd->money -= 50;
-        admin_say("%s城「訓練」：%s（武力%d）部隊訓練完成（金錢 -50）", cname, who_s, sq);
+        admin_say("%s「徵兵」：%s（武%d 級%d）征得 %d 兵（兵士 %d，人口 -%d，金錢 -%d）",
+                  cname, who_s, sq, lv, nr, cd->reserve, nr, cost);
+    } else if (g_pending_group == 1 && g_pending_item == 1) {       /* 訓練：不扣钱，升士气 */
+        int up = 5 + sq / 5 + lv;                                   /* 武力权重大 */
+        cd->morale += up; if (cd->morale > 100) cd->morale = 100;
+        admin_say("%s「訓練」：%s（武%d 級%d）士氣 +%d → %d（城池整體）",
+                  cname, who_s, sq, lv, up, cd->morale);
     }
-    /* ⚠ 不清除 pending、不自动返回朝堂 —— 玩家可连续对多座城执行同一命令
-     * （2026-09-16 用户反馈）；右键返回朝堂时才结束命令阶段。 */
+    if (om) om->acted = 1;      /* 定稿 A2：本月不可再执行（回朝堂后可看到其置灰） */
+    /* 不自动返回朝堂，可连续选城（定稿 A5） */
 }
 
 /* 结束命令阶段：清挂起 + 恢复菜单 + 清信息条引导 */
@@ -681,6 +709,31 @@ static void admin_cancel_pending(void) {
     g_pending_label[0] = '\0';
     s3_strategy_set_banner(g_ast, "");
     s3_admin_set_visible(g_adm, 1);
+}
+
+/* ---------------------------------------------------- 回主選單（唯一出口）
+ * 所有退出到主菜单首界面（開始遊戲/讀取進度…）的路径都必须走这里 ——
+ * 清场景栈 + 复位根 + 清挂起命令/选择器，避免再出现"停在選擇劇本"的路径遗漏。
+ *
+ * 背景（BUG-2，2026-09-17 用户口径）：
+ *   · 朝堂**没有返回功能**，只能走「系統 → 回主選單」；
+ *   · **只有「開始遊戲」才进選擇劇本**（執行遊戲阶段留在场景栈里的 SC_AGE 不得再被显示）。
+ * 此前朝堂分支直接 `mode = 0`，app.roots 仍指向上一个场景根（SC_AGE 選擇時期）
+ * → 长按返回跳到了選擇劇本界面。 */
+static void goto_main_menu(App *app, int *mode) {
+    admin_cancel_pending();
+    if (g_picker) s3_picker_close(g_picker);
+    g_admin_quit = 0;
+    g_admin_map  = 0;
+    g_pending_city = -1;
+    if (g_adm) s3_admin_set_visible(g_adm, 1);      /* 命令阶段收起的菜单恢复 */
+    if (g_ast) s3_strategy_set_banner(g_ast, "");
+    app->sp = 0;                                    /* 清场景栈（防再落到中途场景） */
+    app->roots = SC_MAIN; app->n_roots = NARR(SC_MAIN);
+    app->hover = app->press = 0;
+    *mode = 0;
+    printf("goto main menu (SC_MAIN)\n");
+    ALOG("goto main menu (SC_MAIN)");
 }
 
 /* 朝堂点「需要城池+执行者」的命令 → 挂起，切大地图等玩家选城。
@@ -734,6 +787,7 @@ static int admin_cmd_cb(void *ud, int group, int item, const char *label) {
         }
         ++g_month;
         s3_strategy_set_month(g_ast, g_month);
+        if (g_roster) s3_roster_end_turn(g_roster);   /* 定稿 A2：回合结束清空"本月已行动" */
         admin_say("第 %d 月開始 —— 金錢 %lld · 人口 %lld · 兵士 %lld（開發度決定收入與成長）",
                   g_month, money, people, troop);
         g_admin_map = 1;                        /* 结算完切到大地图看局面 */
@@ -1136,12 +1190,33 @@ int main(int argc, char **argv) {
             if (s3_strategy_set_panel(st, "Shape\\AD\\Base\\CityInfo.shp") != 0)
                 ALOG("city panel load FAILED");
             s3_strategy_clear_cities(st);
+            /* ⚠ 名册（roster）必须在 load_cities **之前**建好并清空 —— BUG-1 根因：
+             * load_cities 内部会 s3_roster_add() 逐将装名册、末尾 s3_roster_mark_city()
+             * 标归属；原先 new/clear 写在 load_cities 之后，
+             *   ① 首次进战略层时 g_roster 仍是 NULL → load_cities 里所有 `if (roster)`
+             *      分支全跳过 → 名册一条都不装；
+             *   ② 重开局时虽有名册，但 clear 在装完之后 → 刚装好的名册被清空。
+             * 两条路都让 s3_roster_workers() 返回 0 → 执行者选择窗永远为空。 */
+            if (!g_roster) g_roster = s3_roster_new();
+            else           s3_roster_clear(g_roster);      /* 重开局 → 名册重建 */
             if (kd) {
                 int sid = s3_kingdom_scenario(kd);
                 int si  = s3_kingdom_selected(kd);
                 const char *my_lord = si >= 0 ? s3_kingdom_lord_name(kd, si) : NULL;
                 s3_strategy_set_my_lord(st, my_lord);
-                load_cities(st, &ctx, sid, my_lord, NULL);
+                load_cities(st, &ctx, sid, my_lord, g_roster);
+                printf("roster: %d officers\n", s3_roster_count(g_roster));
+                ALOG("roster: %d officers", s3_roster_count(g_roster));
+                /* 逐城统计可执行者（只列我方城）—— 实机 logcat 可据此复核 BUG-1 是否修好 */
+                for (int i = 0; i < s3_strategy_count(st); ++i) {
+                    if (!s3_strategy_city_mine(st, i)) continue;
+                    const char *cn = s3_strategy_city_name(st, i);
+                    if (!cn) continue;
+                    int tot  = s3_roster_worker_count(g_roster, cn, 0);
+                    int idle = s3_roster_worker_count(g_roster, cn, 1);
+                    printf("roster: %d officers / %d idle in %s\n", tot, idle, cn);
+                    ALOG("roster: %d officers / %d idle in %s", tot, idle, cn);
+                }
                 /* 朝堂背景轮换（自拟口径：按我方城池数分档 —— 用户确认原版"按发展
                  * 规模"换背景，但判断方式未逆向；先 1-5 城 BG001 / 6-15 BG002 /
                  * ≥16 BG003，实测再调） */
@@ -1181,7 +1256,12 @@ int main(int argc, char **argv) {
              * 朝堂 / 大地图两个视图共用。 */
             if (!g_adm) g_adm = s3_admin_new(read_asset_cb, &ctx, draw_text_cb, &fc,
                                             admin_cmd_cb, NULL);
+            if (!g_picker) g_picker = s3_picker_new(draw_text_cb, &fc);
+            /* 名册的 new/clear 已提前到 load_cities 之前（BUG-1） */
             g_ast = st; g_kd = kd; g_start_path = start_path; g_admin_quit = 0;
+            g_pending_group = g_pending_item = -1; g_pending_label[0] = '\0';
+            g_pending_city = -1;
+            s3_picker_close(g_picker);
             s3_admin_set_origin(g_adm, 45 * 2, 36 * 2);
             s3_admin_set_visible(g_adm, 1);
             /* 朝堂背景已在 load_cities 后按势力规模选定 */
@@ -1217,6 +1297,7 @@ int main(int argc, char **argv) {
             Sango3Canvas *cvc = court ? cv : cv_map;
             s3_strategy_render(st, cvc);
             s3_admin_render(g_adm, cvc);
+            s3_picker_render(g_picker, cvc);
             sango3_presenter_upload(p, cvc->px);
             if (sango3_presenter_frame(p, &drawn)) break;
 
@@ -1224,19 +1305,52 @@ int main(int argc, char **argv) {
             sango3_presenter_pointer(p, &pt);
             s3_admin_on_move(g_adm, pt.inside ? (int32_t)pt.lx : -1,
                                    pt.inside ? (int32_t)pt.ly : -1);
+            /* ---- 执行者选择界面：激活时独占事件（定稿 A1） ---- */
+            if (s3_picker_active(g_picker)) {
+                static int pk_down = 0;
+                static int32_t pk_x = -1, pk_y = -1;
+                s3_picker_on_move(g_picker, pt.inside ? (int32_t)pt.lx : -1,
+                                            pt.inside ? (int32_t)pt.ly : -1);
+                if (pt.rclick) {                        /* 长按/返回 = 取消本次命令 */
+                    s3_picker_close(g_picker);
+                    admin_cancel_pending();
+                    mode = 5;
+                } else {
+                    int off = -1, cancel = 0;
+                    if (pt.lclick) { pk_down = 1; pk_x = (int32_t)pt.lx; pk_y = (int32_t)pt.ly; }
+                    if (!pt.ldown && pk_down) {
+                        pk_down = 0;
+                        s3_picker_on_click(g_picker, pk_x, pk_y, &off, &cancel);
+                        if (off >= 0) {
+                            admin_execute_pending(g_pending_city, off);
+                            char b[168];
+                            snprintf(b, sizeof b,
+                                     "「%s」命令階段：已執行，可繼續點選其它城池（長按返回朝堂）",
+                                     g_pending_label);
+                            s3_strategy_set_banner(g_ast, b);
+                            g_pending_city = -1;
+                        } else if (cancel) {
+                            admin_cancel_pending();
+                            mode = 5;
+                        }
+                    }
+                }
+                SDL_Delay(16);
+                continue;                               /* 选择器激活时不响应地图 */
+            }
             if (g_admin_quit) {
-                /* 回主選單 = 主菜单首界面（開始遊戲/讀取進度…），不是中途的场景
-                 * （2026-09-16 用户指正）—— 场景栈清空并复位根。 */
-                mode = 0; app.hover = app.press = 0; g_admin_quit = 0;
-                app.sp = 0;
-                app.roots = SC_MAIN; app.n_roots = NARR(SC_MAIN);
+                /* 「系統 → 回主選單」= 主菜单首界面（開始遊戲/讀取進度…），不是中途场景
+                 * （2026-09-16 用户指正）—— 走唯一出口 goto_main_menu() */
+                goto_main_menu(&app, &mode);
             } else if (g_admin_map) {
                 g_admin_map = 0;
                 if (court) mode = 4;         /* 「確定」月度结算完 → 切大地图 */
             } else if (pt.rclick) {
                 if (g_pending_group >= 0) admin_cancel_pending();   /* 结束命令阶段 */
-                if (court) { mode = 0; app.hover = app.press = 0; }   /* 朝堂右键 → 主菜单 */
-                else       { mode = 5; }                              /* 地图右键 → 回朝堂 */
+                /* 朝堂**没有返回功能**（2026-09-17 用户口径）：只能走「系統 → 回主選單」，
+                 * 右键/长按/返回键在朝堂一律忽略。此前这里 `mode = 0` 会让它落到场景栈里
+                 * 的選擇劇本界面（BUG-2）。 */
+                if (!court) mode = 5;                               /* 地图右键 → 回朝堂 */
             } else if (!court) {
                 /* 拖动查看地图：按下→移动（超阈值算拖动，地图随手走）→
                  * 抬起且未移动过才算点击选城（避免拖动误选）。
@@ -1269,11 +1383,22 @@ int main(int argc, char **argv) {
                                 int cidx = s3_strategy_selected(st);
                                 if (cidx >= 0) {
                                     if (s3_strategy_city_mine(st, cidx)) {
-                                        admin_execute_pending(cidx);
-                                        char b[128];
+                                        /* 定稿 A1：选城后 → 打开执行者选择界面 */
+                                        const char *cn = s3_strategy_city_name(st, cidx);
+                                        int idle = s3_roster_worker_count(g_roster, cn, 1);
+                                        g_pending_city = cidx;
+                                        s3_picker_open(g_picker, g_roster, cn,
+                                                       g_pending_label, 1);
+                                        printf("picker open: city=%s idle=%d\n",
+                                               cn ? cn : "?", idle);
+                                        ALOG("picker open: city=%s idle=%d",
+                                             cn ? cn : "?", idle);
+                                        char b[168];
+                                        /* 可执行人数直接写进横幅：0 人时用户一眼能分清
+                                         * "此地無武將（關隘）/ 本月均已行動"（不再是 BUG-1 那种空） */
                                         snprintf(b, sizeof b,
-                                                 "「%s」命令階段：已執行，可繼續點選其它城池（右鍵返回朝堂）",
-                                                 g_pending_label);
+                                                 "「%s」：請選擇執行此指令的武將/軍師（%s · 可執行 %d 人）",
+                                                 g_pending_label, cn ? cn : "?", idle);
                                         s3_strategy_set_banner(g_ast, b);
                                     } else {
                                         admin_say("「%s」只能對我方城池執行", g_pending_label);
@@ -1370,6 +1495,15 @@ int main(int argc, char **argv) {
                     ALOG("click cmd=40 (not implemented)");
                 } else {
                     Scene next = scene_for_command(cmd);
+                    /* 只有主選單的「開始遊戲」才进選擇劇本（2026-09-17 用户口径）：
+                     * 原版命令号是**场景内局部语义**，别的场景里出现 cmd=1 时不得落到
+                     * SC_AGE（選擇時期）—— 否则会像 BUG-2 那样"莫名其妙跳到選擇劇本"。 */
+                    if (next.roots == SC_AGE &&
+                        !(app.n_roots > 0 && app.roots[0] == 1u)) {
+                        ALOG("cmd=1 outside main menu -> ignore (roots[0]=%u)",
+                             app.n_roots > 0 ? app.roots[0] : 0u);
+                        next.n = 0;
+                    }
                     if (next.n > 0) {
                         if (app.sp < 16) { app.stack[app.sp].roots = app.roots; app.stack[app.sp].n = app.n_roots; ++app.sp; }
                         app.roots = next.roots;

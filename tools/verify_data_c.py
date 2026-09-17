@@ -243,7 +243,7 @@ def main():
     eq("规则④", "C 类换最强武器后学会数", int(sm["test.class_c_best_weapon_learned"]),
        int(sm["test.class_c_best_weapon_total"]))
     eq("需求③", "单将最大携带数（无 3 招上限）", int(sm["test.carry_capacity"]), 8)
-    eq("需求②", "士兵上限", int(sm["soldier_limit"]), 1000)
+    eq("需求②", "士兵上限", int(sm["soldier_limit"]), 1200)   # 2026-09-16 用户复核：1000 → 1200
 
     # ------------------------------------------------------------ 截断风险
     print()

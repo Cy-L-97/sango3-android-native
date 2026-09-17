@@ -33,8 +33,9 @@
 #define S3_BEAST_INTELLIGENCE_MAX        20
 #define S3_BEAST_HP_MIN                  150
 
-/* 需求②：士兵上限。原版硬编码 400（数据层查无此值），本引擎就是一个变量。 */
-#define S3_SOLDIER_LIMIT_DEFAULT 1000
+/* 需求②：士兵上限。原版硬编码 400（数据层查无此值），本引擎就是一个变量。
+ * 2026-09-16 用户复核：总上限 1000 → **1200**（另：单将带兵上限 = 等级×40，等级上限暂定 30）。 */
+#define S3_SOLDIER_LIMIT_DEFAULT 1200
 #define S3_SOLDIER_LIMIT_VANILLA 400
 
 /* ------------------------------------------------------------------ 物品 */
@@ -112,7 +113,7 @@ typedef struct {
     S3Soldier *soldiers;  int n_soldiers;
     S3Magic   *magics;    int n_magics;
 
-    int soldier_limit;             /* 需求②：默认 1000 */
+    int soldier_limit;             /* 需求②：默认 1200（原版 400） */
     int ok;                        /* 关键表是否全部载入 */
     char error[256];
 } S3GameData;

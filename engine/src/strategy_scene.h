@@ -40,9 +40,15 @@ typedef struct {
     int32_t size;            /* City.ini 的 Size（城规模） */
 
     /* 执行者（General01.ini 能力 + General02.ini 归属，各取该城最高）。
-     * 原版口径：內政效果量看执行者智力，軍事（徵兵）看武力 —— 2026-09-16 用户口述。 */
+     * 原版口径：內政效果量看执行者智力，軍事（徵兵）看武力 —— 2026-09-16 用户口述。
+     * ⚠ 2026-09-16 复核定稿后，执行者改为**玩家在武将选择界面指定**（roster 模块），
+     *   这里保留的"最佳者"仅作朝堂面板/日志的展示用。 */
     char    worker_int[32];  int32_t worker_int_val;   /* 智力最高 */
     char    worker_str[32];  int32_t worker_str_val;   /* 武力最高 */
+
+    /* 士气（定稿 J4/C2）：**城池整体**，上限 100、初值 70、每回合不衰减；
+     * 只在 战斗撤退 / 不敢单挑 / 受军师技影响 时下降，战斗胜利上升。 */
+    int32_t morale;
 } S3CityDetail;
 
 typedef struct S3Strategy S3Strategy;
