@@ -122,7 +122,11 @@ void s3_strategy_pan(S3Strategy *s, int32_t dx, int32_t dy);
 int  s3_strategy_selected(const S3Strategy *s);      /* 下标，-1 = 无 */
 int  s3_strategy_count(const S3Strategy *s);
 const char *s3_strategy_city_name(const S3Strategy *s, int idx);
-int         s3_strategy_city_mine(const S3Strategy *s, int idx);
+int  s3_strategy_city_mine(const S3Strategy *s, int idx);
+
+/* -------- I1 势力插旗：旗号取自 Nation.ini 的 Flag（1~35，0 = 无主） -------- */
+void s3_strategy_set_city_flag(S3Strategy *s, int idx, int flag);
+int  s3_strategy_city_flag(const S3Strategy *s, int idx);
 
 /* -------- 調查 / 情報（定稿 F1/F2） --------
  * known = 我方城池（永远可见）或"非我方但仍在調查有效期内"。

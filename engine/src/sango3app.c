@@ -457,24 +457,33 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
         }
     }
 
-    /* ---- 表④：Nation.ini —— 我方君主 → 各势力友好度（未列出者默认 50）---- */
-    static NameCount friend_n[96];
+    /* ---- 表④：Nation.ini —— ① 各势力旗号（I1 插旗）② 我方君主 → 各势力友好度 ---- */
+    static NameCount friend_n[96], flag_n[96];
     memset(friend_n, 0, sizeof friend_n);
-    if (my_lord && *my_lord) {
+    memset(flag_n,   0, sizeof flag_n);
+    {
         uint32_t l5 = 0;
         uint8_t *d5 = pak_get(c, "Setting\\Nation.ini", &l5);
         if (d5) {
             S3Ini *ni = s3_ini_parse_inc(d5, l5, include_cb, c);
             free(d5);
             if (ni) {
-                /* 段落名是 NATION100/101/…（不是纯 "NATION"），故直接遍历 sections */
+                /* 段落名是 NATION{n}{xx}（不是纯 "NATION"）—— **首位数字 = 剧本号**，
+                 * 如 NATION100~117 = 剧本 1 的 18 个势力。故先按剧本过滤，避免串本。 */
+                char pf[16];
+                snprintf(pf, sizeof pf, "NATION%d", scenario_id);
+                const int pflen = (int)strlen(pf);
                 for (int i = 0; i < ni->n_sections; ++i) {
                     const S3IniSection *sec = &ni->sections[i];
-                    if (!sec->name || strncmp(sec->name, "NATION", 6) != 0) continue;
+                    if (!sec->name || strncmp(sec->name, pf, pflen) != 0) continue;
                     const char *nl = s3_ini_str(sec, "Lord", NULL);
-                    if (!nl || strcmp(nl, my_lord)) continue;
+                    if (!nl || !*nl) continue;
+                    /* 旗号：Lord → Flag（1~35），插旗绘制时按号取色板 */
+                    int fl = s3_ini_int(sec, "Flag", 0);
+                    if (fl > 0) nc_add(flag_n, 96, nl, fl);
+                    if (!my_lord || strcmp(nl, my_lord)) continue;
                     const char *fs = s3_ini_str(sec, "Friendship", NULL);
-                    if (!fs) break;
+                    if (!fs) continue;
                     /* "君主,值,君主,值..." —— 逐对扫描 */
                     const char *p = fs;
                     while (*p) {
@@ -488,7 +497,6 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
                         if (*p == ',') ++p;
                         if (k > 0 && any) nc_add(friend_n, 96, nm, val);
                     }
-                    break;
                 }
                 s3_ini_free(ni);
             }
@@ -516,6 +524,8 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
         /* ⚠ Range 是城市按钮**矩形的左上角**（如 襄平 = 823,44,24,19），
          * 城池图标中心要加半个宽高 —— 否则标记/命中都偏到左上角（用户实测发现）。 */
         s3_strategy_add_city(st, nm, x + w / 2, y + h / 2, w, h, is_mine);
+        /* I1 插旗：城市太守 → 所属势力的旗号（查不到 → 0，不插旗） */
+        if (cl) s3_strategy_set_city_flag(st, n, nc_get(flag_n, 96, cl));
 
         S3CityDetail det;
         memset(&det, 0, sizeof det);
@@ -557,17 +567,19 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
     }
     printf("strategy: %d cities (%d mine)\n", n, n_mine);
     ALOG("strategy: %d cities (%d mine)", n, n_mine);
-    /* 数据层抽样日志（实机 logcat / PC 控制台可直接核对面板九行取值） */
-    for (int i = 0; i < n && i < 3; ++i) {
+    /* 数据层抽样日志（实机 logcat / PC 控制台可直接核对面板九行取值 + 插旗旗号） */
+    for (int i = 0; i < n && i < 6; ++i) {
         const char *cn = s3_strategy_city_name(st, i);
         const S3CityDetail *dt = s3_strategy_city_detail(st, i);
         if (!dt) { printf("  city[%d] %s: (no detail)\n", i, cn ? cn : "?"); continue; }
-        printf("  city[%d] %s: lord=%s gens=%d dev=%d people=%d money=%d res=%d size=%d fr=%d\n",
+        printf("  city[%d] %s: lord=%s gens=%d dev=%d people=%d money=%d res=%d size=%d fr=%d flag=%d\n",
                i, cn ? cn : "?", dt->lord, dt->n_generals, dt->dev,
-               dt->people, dt->money, dt->reserve, dt->size, dt->friendliness);
-        ALOG("city[%d] %s lord=%s gens=%d dev=%d people=%d money=%d res=%d fr=%d",
+               dt->people, dt->money, dt->reserve, dt->size, dt->friendliness,
+               s3_strategy_city_flag(st, i));
+        ALOG("city[%d] %s lord=%s gens=%d dev=%d people=%d money=%d res=%d fr=%d flag=%d",
              i, cn ? cn : "?", dt->lord, dt->n_generals, dt->dev,
-             dt->people, dt->money, dt->reserve, dt->friendliness);
+             dt->people, dt->money, dt->reserve, dt->friendliness,
+             s3_strategy_city_flag(st, i));
     }
     return n;
 }

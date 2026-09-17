@@ -17,9 +17,29 @@ typedef struct {
     int32_t mx, my;      /* 城池图标中心的地图像素坐标（1024×768 空间） */
     int32_t mw, mh;      /* 图标尺寸（地图像素） */
     int     mine;
+    int     flag;        /* 势力旗号（Nation.ini 的 Flag，1~35；0 = 未知/无主） */
     S3CityDetail det;    /* 面板九行数据 */
     int     has_detail;
 } StratCity;
+
+/* ---------------------------------------------------------------- 势力旗色板
+ * 原版旗位图（Shape\AD\Btn\Flag\Flag{势力}{状态}.SHP）是 **type=1** 的特殊版式
+ * （29 行行表 + 32 位像素流，与常规 type=0「一行一帧」不同，尚未破解 —— 见 T13）。
+ * 故这里先用**程序化旗帜**：旗杆 + 三角旗，颜色按 Flag 号取自本表（32 色，便于分辨）。
+ * 纯观感细节，按约定「玩法优先，不逐像素复刻」可降级；后续若破解了原版旗，
+ * 只需把 draw_city_flag() 换成贴图，其余逻辑不动。 */
+static const uint8_t FLAG_PAL[36][3] = {
+    {  0,  0,  0},                                              /* 0 = 未用 */
+    {214, 178,  94}, {126, 176, 232}, {232, 120, 120}, {168, 216, 128},
+    {226, 146, 214}, {140, 220, 214}, {240, 200, 120}, {176, 156, 232},
+    {232, 168, 128}, {150, 200, 160}, {216, 128, 168}, {128, 168, 208},
+    {224, 216, 128}, {188, 132, 232}, {128, 224, 176}, {232, 156,  96},
+    {160, 176, 208}, {208, 120, 136}, {144, 208, 232}, {232, 184, 168},
+    {168, 200, 120}, {200, 148, 200}, {136, 196, 200}, {240, 168, 200},
+    {176, 168, 128}, {204, 204, 204}, {136, 144, 160}, {220, 196, 232},
+    {152, 168, 136}, {232, 208, 176}, {196, 176, 148}, {188, 188, 220},
+    {212, 212, 160}, {164, 188, 200}, {224, 176, 148}
+};
 
 struct S3Strategy {
     S3StratReadAsset read_asset; void *asset_ud;
@@ -53,6 +73,11 @@ struct S3Strategy {
 };
 
 static void draw_hud(S3Strategy *s, Sango3Canvas *cv);
+/* I1 插旗 / I3 城名（定义在 render 之后，这里前置声明） */
+static void draw_city_flag(Sango3Canvas *cv, int32_t x, int32_t y,
+                           int32_t hw, int32_t hh, int flag, int mine);
+static void draw_city_name(S3Strategy *s, Sango3Canvas *cv, int32_t x, int32_t y,
+                           int32_t hw, int32_t hh, const char *name, int mine, int sel);
 
 S3Strategy *s3_strategy_new(S3StratReadAsset read_asset, void *asset_ud,
                             S3StratDrawText draw_text, void *text_ud) {
@@ -333,13 +358,13 @@ void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
     }
 
     /* 城市标记：己方金色框；选中红框。其余城不额外标记 —— 地图整图自带城池图标。
-     * 框大小按该城图标尺寸等比换算（大城/中城/小城/关卡尺寸不同）。 */
+     * 框大小按该城图标尺寸等比换算（大城/中城/小城/关卡尺寸不同）。
+     * I1/I3：**所有城**都要插旗 + 画城名，故不再 `continue` 跳过非我方城。 */
     int32_t vw = s->vp_w > 0 ? s->vp_w : (s->map_ok ? s->map.width : 1024);
     int32_t vh = s->vp_h > 0 ? s->vp_h : (s->map_ok ? s->map.height : 768);
     for (int i = 0; i < s->n_cities; ++i) {
         int sel = (i == s->sel);
         int mine = s->city[i].mine;
-        if (!sel && !mine) continue;
         int32_t lx, ly;
         map_to_logical(s, cv, s->city[i].mx, s->city[i].my, &lx, &ly);
         int32_t hw = (int32_t)((int64_t)s->city[i].mw * cv->w / vw / 2) + 3;
@@ -350,12 +375,50 @@ void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
             sango3_canvas_frame(cv, lx - hw, ly - hh, hw * 2, hh * 2, 2, 255, 60, 60);
             sango3_canvas_frame(cv, lx - hw - 2, ly - hh - 2, (hw + 2) * 2, (hh + 2) * 2,
                                 1, 255, 200, 120);
-        } else {
+        } else if (mine) {
             sango3_canvas_frame(cv, lx - hw, ly - hh, hw * 2, hh * 2, 2, 255, 214, 90);
         }
+        /* 城名放图标下方、旗放图标左上 —— 两者都不遮图标本身 */
+        draw_city_name(s, cv, lx, ly, hw, hh, s->city[i].name, mine, sel);
+        draw_city_flag(cv, lx, ly, hw, hh, s->city[i].flag, mine);
     }
 
     draw_hud(s, cv);
+}
+
+/* ----------------------------------------------------- I1：城池插所属势力旗
+ * 位置 = 城图标左上角外侧（原版也是把旗插在城池图标旁）。x,y = 图标中心（画布坐标）。 */
+static void draw_city_flag(Sango3Canvas *cv, int32_t x, int32_t y,
+                           int32_t hw, int32_t hh, int flag, int mine) {
+    if (flag <= 0 || flag >= (int)(sizeof FLAG_PAL / sizeof *FLAG_PAL)) return;
+    const uint8_t *c = FLAG_PAL[flag];
+    const int32_t px = x - hw - 7;              /* 杆底离图标左侧 7px */
+    const int32_t py = y - hh - 5;
+    const int32_t ph = hh * 2 + 8;              /* 杆高随图标尺寸走 */
+    sango3_canvas_fill(cv, px, py, 2, ph, 74, 56, 34);                    /* 旗杆 */
+    sango3_canvas_fill(cv, px + 2, py, 15, 10, c[0], c[1], c[2]);          /* 旗面 */
+    sango3_canvas_frame(cv, px + 2, py, 15, 10, 1,
+                        (uint8_t)(c[0] / 2), (uint8_t)(c[1] / 2), (uint8_t)(c[2] / 2));
+    if (mine) sango3_canvas_frame(cv, px + 1, py - 1, 17, 12, 1, 255, 240, 180);
+}
+
+/* ------------------------------------------------------- I3：城池名显示层
+ * 原版是烘焙位图（Shape\AD\Base\CitiesName.shp，版式特殊未破解）；这里**改用引擎字体
+ * 直接画文本** —— 好处是跟着「简中显示层」走，无需再解包，也避免了繁体位图与简中不一致。
+ * 见 docs/战略地图格式.md 的取舍说明。 */
+static void draw_city_name(S3Strategy *s, Sango3Canvas *cv, int32_t x, int32_t y,
+                           int32_t hw, int32_t hh, const char *name,
+                           int mine, int sel) {
+    if (!s->draw_text || !name || !*name) return;
+    (void)hw;                                   /* 名字条宽度固定，与图标宽度无关 */
+    const int32_t bw = 58, bh = 16;             /* 底衬与文字框（画布坐标） */
+    const int32_t bx = x - bw / 2;
+    const int32_t by = y + hh + 2;
+    sango3_canvas_fill(cv, bx, by, bw, bh, 10, 12, 20);
+    if (sel)              sango3_canvas_frame(cv, bx, by, bw, bh, 1, 255, 120, 120);
+    else if (mine)        sango3_canvas_frame(cv, bx, by, bw, bh, 1, 200, 170, 90);
+    s->draw_text(s->text_ud, cv, name, bx, by, bw, bh,
+                 sel ? 0xFFD0C0u : (mine ? 0xFFE9A8u : 0xE6E6E6u), 0, 0x8u | 0x4u);
 }
 
 /* 信息条 + 城池信息面板（地图 / 朝堂两个视图共用） */
@@ -501,6 +564,16 @@ const S3CityDetail *s3_strategy_city_detail(const S3Strategy *s, int idx) {
 S3CityDetail *s3_strategy_city_detail_mut(S3Strategy *s, int idx) {
     return (s && idx >= 0 && idx < s->n_cities && s->city[idx].has_detail)
          ? &s->city[idx].det : NULL;
+}
+
+/* ------------------------------- I1：势力旗号（Nation.ini 的 Flag） ------------------------------- */
+void s3_strategy_set_city_flag(S3Strategy *s, int idx, int flag) {
+    if (!s || idx < 0 || idx >= s->n_cities) return;
+    s->city[idx].flag = (flag > 0) ? flag : 0;
+}
+
+int s3_strategy_city_flag(const S3Strategy *s, int idx) {
+    return (s && idx >= 0 && idx < s->n_cities) ? s->city[idx].flag : 0;
 }
 
 /* ------------------------- 調查 / 情報（定稿 F1/F2） ------------------------- */
