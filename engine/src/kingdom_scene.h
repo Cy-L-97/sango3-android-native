@@ -46,6 +46,9 @@ void s3_kingdom_on_click(S3Kingdom *k, int32_t lx, int32_t ly);
 /* 0 = 继续；1 = 已决定（取 selected 后回战略层）；2 = 取消 */
 int         s3_kingdom_result(const S3Kingdom *k);
 int         s3_kingdom_selected(const S3Kingdom *k);          /* 下标，-1 = 无 */
+/* 由外部界面（I2 大地图版 lord_picker）反向设置选中的君主 —— 两处选择必须同步，
+ * 否则进战略层时 s3_kingdom_selected() 取到旧值 → my_lord 错 → 全城「我方 0」 */
+void        s3_kingdom_select(S3Kingdom *k, int idx);
 const char *s3_kingdom_lord_name(const S3Kingdom *k, int idx);
 int         s3_kingdom_lord_cities(const S3Kingdom *k, int idx);
 int         s3_kingdom_lord_people(const S3Kingdom *k, int idx);

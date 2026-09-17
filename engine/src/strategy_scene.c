@@ -74,8 +74,9 @@ struct S3Strategy {
 
 static void draw_hud(S3Strategy *s, Sango3Canvas *cv);
 /* I1 插旗 / I3 城名（定义在 render 之后，这里前置声明） */
-static void draw_city_flag(Sango3Canvas *cv, int32_t x, int32_t y,
-                           int32_t hw, int32_t hh, int flag, int mine);
+static void draw_city_flag(S3Strategy *s, Sango3Canvas *cv, int32_t x, int32_t y,
+                           int32_t hw, int32_t hh, int flag, int mine,
+                           const char *lord);
 static void draw_city_name(S3Strategy *s, Sango3Canvas *cv, int32_t x, int32_t y,
                            int32_t hw, int32_t hh, const char *name, int mine, int sel);
 
@@ -378,28 +379,53 @@ void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
         } else if (mine) {
             sango3_canvas_frame(cv, lx - hw, ly - hh, hw * 2, hh * 2, 2, 255, 214, 90);
         }
-        /* 城名放图标下方、旗放图标左上 —— 两者都不遮图标本身 */
+        /* 城名放图标下方；旗**插在城池点位本身**（与选中框同一中心点）—— 都不遮城名 */
         draw_city_name(s, cv, lx, ly, hw, hh, s->city[i].name, mine, sel);
-        draw_city_flag(cv, lx, ly, hw, hh, s->city[i].flag, mine);
+        draw_city_flag(s, cv, lx, ly, hw, hh, s->city[i].flag, mine,
+                       s->city[i].det.lord);
     }
 
     draw_hud(s, cv);
 }
 
 /* ----------------------------------------------------- I1：城池插所属势力旗
- * 位置 = 城图标左上角外侧（原版也是把旗插在城池图标旁）。x,y = 图标中心（画布坐标）。 */
-static void draw_city_flag(Sango3Canvas *cv, int32_t x, int32_t y,
-                           int32_t hw, int32_t hh, int flag, int mine) {
+ * 位置 = **城池点位本身**（x,y = 图标中心，与选中框同一中心点）；
+ * 旗面按图标尺寸等比放大，**旗上书势力代表字**（君主名首字，如曹操势力写「曹」）——
+ * 2026-09-17 用户实机指正：原先旗在图标左下外侧，且只有颜色区分，与原文不符。
+ * 颜色仍按 Flag 号取自 FLAG_PAL，作为第二重区分 + 我方金边。 */
+static void draw_city_flag(S3Strategy *s, Sango3Canvas *cv, int32_t x, int32_t y,
+                           int32_t hw, int32_t hh, int flag, int mine,
+                           const char *lord) {
     if (flag <= 0 || flag >= (int)(sizeof FLAG_PAL / sizeof *FLAG_PAL)) return;
     const uint8_t *c = FLAG_PAL[flag];
-    const int32_t px = x - hw - 7;              /* 杆底离图标左侧 7px */
-    const int32_t py = y - hh - 5;
-    const int32_t ph = hh * 2 + 8;              /* 杆高随图标尺寸走 */
-    sango3_canvas_fill(cv, px, py, 2, ph, 74, 56, 34);                    /* 旗杆 */
-    sango3_canvas_fill(cv, px + 2, py, 15, 10, c[0], c[1], c[2]);          /* 旗面 */
-    sango3_canvas_frame(cv, px + 2, py, 15, 10, 1,
+
+    int32_t fw = hw * 2;                        /* 旗面宽 ≈ 城池图标宽 */
+    if (fw < 20) fw = 20;
+    if (fw > 42) fw = 42;                       /* 上限：别盖住相邻城 */
+    int32_t fh = (fw * 7) / 10;
+    if (fh < 14) fh = 14;
+    const int32_t fx = x - fw / 2;              /* 与选中框同中心 */
+    const int32_t fy = y - fh / 2;
+
+    /* 旗杆：从旗面下沿往图标下方伸出一点，做出"插在城上"的观感 */
+    sango3_canvas_fill(cv, x - 1, fy + fh, 2, hh / 2 + 3, 74, 56, 34);
+
+    sango3_canvas_fill(cv, fx, fy, fw, fh, c[0], c[1], c[2]);               /* 旗面 */
+    sango3_canvas_frame(cv, fx, fy, fw, fh, 1,
                         (uint8_t)(c[0] / 2), (uint8_t)(c[1] / 2), (uint8_t)(c[2] / 2));
-    if (mine) sango3_canvas_frame(cv, px + 1, py - 1, 17, 12, 1, 255, 240, 180);
+    if (mine) sango3_canvas_frame(cv, fx - 1, fy - 1, fw + 2, fh + 2, 1, 255, 240, 180);
+
+    /* 势力代表字：君主名首字（复姓如公孫/司馬同样取首字，与原版一致） */
+    if (s->draw_text && lord && *lord) {
+        char g[8];
+        unsigned char c0 = (unsigned char)lord[0];
+        int n = 1;
+        if (c0 >= 0xF0) n = 4; else if (c0 >= 0xE0) n = 3; else if (c0 >= 0xC0) n = 2;
+        if (n > (int)sizeof g - 1) n = (int)sizeof g - 1;
+        memcpy(g, lord, (size_t)n); g[n] = '\0';
+        const int fnt = (fh >= 22) ? 2 : 1;     /* 20px / 16px 两档，随旗面高度选 */
+        s->draw_text(s->text_ud, cv, g, fx, fy, fw, fh, 0x101010u, fnt, 0x8u | 0x4u);
+    }
 }
 
 /* ------------------------------------------------------- I3：城池名显示层

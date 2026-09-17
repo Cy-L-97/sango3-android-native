@@ -1300,6 +1300,11 @@ int main(int argc, char **argv) {
                     if (idx >= 0) {
                         /* 换君主：重算城池归属 + 选中其主城（面板随之显示） */
                         const char *lord = s3_kingdom_lord_name(kd, idx);
+                        /* ⚠ 必须回写 kingdom_scene 的选中下标：进战略层（mode 3）时
+                         * my_lord 取自 s3_kingdom_selected(kd)，不回写就会拿旧值/空值
+                         * → 全城「我方 0」（我方金框、我方全軍名册全失效）。
+                         * 2026-09-17 实机发现并修复。 */
+                        s3_kingdom_select(kd, idx);
                         int mine = s3_strategy_remark_owner(st, lord);
                         s3_strategy_select(st, s3_strategy_first_city_of(st, lord));
                         char b[160];

@@ -222,6 +222,8 @@ void s3_kingdom_on_click(S3Kingdom *k, int32_t lx, int32_t ly) {
 
 int         s3_kingdom_result(const S3Kingdom *k)  { return k ? k->result : 2; }
 int         s3_kingdom_selected(const S3Kingdom *k){ return k ? k->sel : -1; }
+/* I2 大地图版（lord_picker）反向同步选中君主 —— 见 kingdom_scene.h 注释（2026-09-17 修复） */
+void        s3_kingdom_select(S3Kingdom *k, int idx){ if (!k) return; k->sel = (idx >= 0 && idx < k->n) ? idx : -1; }
 int         s3_kingdom_count(const S3Kingdom *k)   { return k ? k->n : 0; }
 int         s3_kingdom_scenario(const S3Kingdom *k){ return k ? k->scenario : 0; }
 
