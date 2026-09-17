@@ -576,6 +576,32 @@ int s3_strategy_city_flag(const S3Strategy *s, int idx) {
     return (s && idx >= 0 && idx < s->n_cities) ? s->city[idx].flag : 0;
 }
 
+/* I2 选君主界面用：换一个君主 → 重算各城"是否我方"（金框/高亮跟着变）。
+ * 与 s3_strategy_set_my_lord 的区别：后者只记名字（信息条文案），这里改归属。 */
+int s3_strategy_remark_owner(S3Strategy *s, const char *lord) {
+    if (!s) return 0;
+    int mine = 0;
+    for (int i = 0; i < s->n_cities; ++i) {
+        const char *l = s->city[i].det.lord;
+        int is_mine = (lord && *lord && l[0] && !strcmp(l, lord)) ? 1 : 0;
+        /* 城池表里 Lord 与势力君主同名即算它们同势力 —— 与 load_cities 口径一致
+         * （有些剧本的城太守不是君主本人，那种城靠 Nation.ini 的 Flag 归色，
+         *   归属高亮只认"太守==君主"，保持与开局后一致）。 */
+        s->city[i].mine = is_mine;
+        if (is_mine) ++mine;
+    }
+    snprintf(s->my_lord, sizeof s->my_lord, "%s", lord ? lord : "");
+    return mine;
+}
+
+/* 取该君主的第一座城下标（用作"主城"，面板显示它）-1 = 无 */
+int s3_strategy_first_city_of(const S3Strategy *s, const char *lord) {
+    if (!s || !lord || !*lord) return -1;
+    for (int i = 0; i < s->n_cities; ++i)
+        if (s->city[i].mine || !strcmp(s->city[i].det.lord, lord)) return i;
+    return -1;
+}
+
 /* ------------------------- 調查 / 情報（定稿 F1/F2） ------------------------- */
 int s3_strategy_city_known(const S3Strategy *s, int idx) {
     if (!s || idx < 0 || idx >= s->n_cities) return 0;

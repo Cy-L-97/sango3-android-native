@@ -16,6 +16,14 @@
 typedef struct {
     char name[64];
     int  cities, people, money, custom;
+    /* 君主本人属性（General01.ini 的 [GENERAL] 段，按 Name 匹配）—— I2 列表用。
+     * 口径（2026-09-17 用户核查原版 + 查资料）：
+     *   · 「聲望」= **相性**（本游戏没有独立声望数值系统；君主的"声望"就是相性）
+     *     → 数据字段 = `Personality`（实测取值 1~149，明显聚类：25=曹操系 / 75=劉備系 /
+     *       125=孫吳系 …，差值为同一派系）；
+     *   · 忠 = `Justice`（义理）· 士 = `Morale`（士气）· 武/智 = Strength/Intelligence。
+     * 另注：势力级的「威望」是**运行时值**（见 docs/系统功能设定定稿.md L 区），数据层无。 */
+    int  str, intel, justice, morale, personality, portrait;
 } KdLord;
 
 struct S3Kingdom {
@@ -88,6 +96,43 @@ void s3_kingdom_add_lord(S3Kingdom *k, const char *name,
     k->lords[k->n].money  = money;
     k->lords[k->n].custom = custom;
     ++k->n;
+}
+
+/* 给已加入的君主补属性（按名字匹配；General01 里没有该名字则忽略） */
+void s3_kingdom_set_lord_stats(S3Kingdom *k, const char *name,
+                               int str, int intel, int justice, int morale,
+                               int personality, int portrait) {
+    if (!k || !name) return;
+    for (int i = 0; i < k->n; ++i) {
+        if (strcmp(k->lords[i].name, name)) continue;
+        k->lords[i].str         = str;
+        k->lords[i].intel       = intel;
+        k->lords[i].justice     = justice;
+        k->lords[i].morale      = morale;
+        k->lords[i].personality = personality;
+        k->lords[i].portrait    = portrait;
+        return;
+    }
+}
+
+int s3_kingdom_lord_personality(const S3Kingdom *k, int idx) {
+    return (k && idx >= 0 && idx < k->n) ? k->lords[idx].personality : 0;
+}
+
+int s3_kingdom_lord_str(const S3Kingdom *k, int idx) {
+    return (k && idx >= 0 && idx < k->n) ? k->lords[idx].str : 0;
+}
+int s3_kingdom_lord_intel(const S3Kingdom *k, int idx) {
+    return (k && idx >= 0 && idx < k->n) ? k->lords[idx].intel : 0;
+}
+int s3_kingdom_lord_justice(const S3Kingdom *k, int idx) {
+    return (k && idx >= 0 && idx < k->n) ? k->lords[idx].justice : 0;
+}
+int s3_kingdom_lord_morale(const S3Kingdom *k, int idx) {
+    return (k && idx >= 0 && idx < k->n) ? k->lords[idx].morale : 0;
+}
+int s3_kingdom_lord_portrait(const S3Kingdom *k, int idx) {
+    return (k && idx >= 0 && idx < k->n) ? k->lords[idx].portrait : 0;
 }
 
 void s3_kingdom_render(S3Kingdom *k, Sango3Canvas *cv) {

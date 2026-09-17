@@ -128,6 +128,11 @@ int  s3_strategy_city_mine(const S3Strategy *s, int idx);
 void s3_strategy_set_city_flag(S3Strategy *s, int idx, int flag);
 int  s3_strategy_city_flag(const S3Strategy *s, int idx);
 
+/* -------- I2 选君主（大地图版）：换君主 → 重算归属高亮 -------- */
+/* 返回"我方"城池数；同时把 lord 记进 my_lord（信息条文案）。 */
+int  s3_strategy_remark_owner(S3Strategy *s, const char *lord);
+int  s3_strategy_first_city_of(const S3Strategy *s, const char *lord);
+
 /* -------- 調查 / 情報（定稿 F1/F2） --------
  * known = 我方城池（永远可见）或"非我方但仍在調查有效期内"。
  * 非 known 的城池只露 城市/太守，其余数值一律不显示（否则調查没有意义）。 */

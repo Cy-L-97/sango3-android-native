@@ -31,6 +31,7 @@
 #include "admin_menu.h"
 #include "roster.h"
 #include "gen_picker.h"
+#include "lord_picker.h"
 
 #include <SDL.h>
 #include <stdarg.h>
@@ -214,6 +215,34 @@ static int load_scenario(S3Kingdom *k, int id, PakCtx *c) {
         ++n;
     }
     s3_ini_free(ini);
+
+    /* ---- 君主本人属性：General01.ini 的 [GENERAL] 段（按 Name 匹配）----
+     * I2 的君主列表要显示 武/智/忠/士 与肖像，全部来自这里：
+     *   Strength=武力 · Intelligence=智力 · Justice=忠 · Morale=士 · Portrait=肖像号 */
+    {
+        uint32_t l2 = 0;
+        uint8_t *d2 = pak_get(c, "Setting\\General01.ini", &l2);
+        if (d2) {
+            S3Ini *gi = s3_ini_parse_inc(d2, l2, include_cb, c);
+            free(d2);
+            if (gi) {
+                for (int i = 0; ; ++i) {
+                    const S3IniSection *sec = s3_ini_section_at(gi, "GENERAL", i);
+                    if (!sec) break;
+                    const char *nm = s3_ini_str(sec, "Name", NULL);
+                    if (!nm || !*nm) continue;
+                    s3_kingdom_set_lord_stats(k, nm,
+                        s3_ini_int(sec, "Strength", 0),
+                        s3_ini_int(sec, "Intelligence", 0),
+                        s3_ini_int(sec, "Justice", 0),
+                        s3_ini_int(sec, "Morale", 0),
+                        s3_ini_int(sec, "Personality", 0),   /* 相性（= 原版"声望"） */
+                        s3_ini_int(sec, "Portrait", 0));
+                }
+                s3_ini_free(gi);
+            }
+        }
+    }
     return n;
 }
 
@@ -646,6 +675,8 @@ static int     g_map_drag = 0, g_map_moved = 0, g_map_menu = 0;
 static int32_t g_map_px = -1, g_map_py = -1;
 static S3Roster    *g_roster = NULL;        /* 武将名册（执行者 + 月度行动限制） */
 static S3GenPicker *g_picker = NULL;        /* 执行者选择界面 */
+static S3LordPick  *g_lp = NULL;            /* 選擇君主（大地图版，I2） */
+static int          g_lp_ready = 0;         /* 1 = 该界面已装载地图+城池（避免重复载入） */
 
 static void admin_say(const char *fmt, ...) {
     char b[192];
@@ -1177,47 +1208,134 @@ int main(int argc, char **argv) {
         }
 
         if (mode == 2) {
-            /* ================= 选择君主 ================= */
-            if (!kd) kd = s3_kingdom_new(draw_text_cb, &fc);
-            ms.roots = SC_EDITOR_BG;
-            ms.n_roots = NARR(SC_EDITOR_BG);
-            s3_menu_render(&ms, cv);
-            s3_kingdom_render(kd, cv);
-            sango3_presenter_upload(p, cv->px);
+            /* ================= 选择君主（**大地图版**，定稿 I2）=================
+             * 地图 + 左侧君主列表（君主/相/武/智/忠/士）+ 选中君主的城池高亮插旗 +
+             * 右侧城池面板（strategy 的 7400）+ 右侧肖像 + 底部统计栏。
+             * 旧的 kingdom_scene 纯列表退役（模块保留，供其它入口复用）。 */
+            if (!st) st = s3_strategy_new(read_asset_cb, &ctx, draw_text_cb, &fc);
+            if (!g_lp) g_lp = s3_lordpick_new(draw_text_cb, &fc, read_asset_cb, &ctx);
+            /* 只在**首次进入**装载地图/城池（选君主期间反复点行不重载） */
+            if (!g_lp_ready) {
+                if (s3_strategy_set_map(st, "Shape\\AD\\Base\\Map.shp") != 0)
+                    ALOG("strategy map load FAILED");
+                if (s3_strategy_set_panel(st, "Shape\\AD\\Base\\CityInfo.shp") != 0)
+                    ALOG("city panel load FAILED");
+                s3_strategy_clear_cities(st);
+                if (kd) {
+                    int sid = s3_kingdom_scenario(kd);
+                    /* my_lord 传 NULL：此时还没有我方 → 全部城"他方"，只靠旗色区分势力 */
+                    load_cities(st, &ctx, sid, NULL, NULL);
+                }
+                {   /* 视口与大地图一致（1:1 裁取，COVER 铺满） */
+                    int32_t ww = 0, wh = 0;
+                    sango3_presenter_window_size(p, &ww, &wh);
+                    int32_t mw = 1024, mh = 768, vw = mw, vh = mh;
+                    if (ww > 0 && wh > 0) {
+                        if ((int64_t)ww * mh >= (int64_t)wh * mw) vh = (int32_t)((int64_t)mw * wh / ww);
+                        else                                        vw = (int32_t)((int64_t)mh * ww / wh);
+                    }
+                    if (vw < 64) vw = 64;
+                    if (vh < 64) vh = 64;
+                    s3_strategy_set_viewport(st, vw, vh);
+                    if (!cv_map || cv_map->w != vw || cv_map->h != vh) {
+                        if (cv_map) sango3_canvas_free(cv_map);
+                        cv_map = sango3_canvas_new(vw, vh, 0, 0, 0);
+                    }
+                    s3_strategy_set_panel_zoom(st, 1);      /* 给肖像留位置，用原版尺寸 */
+                    s3_strategy_set_view(st, 0);            /* 地图视图（非朝堂） */
+                    s3_lordpick_bind(g_lp, kd);
+                    s3_lordpick_reset(g_lp);
+                    g_lp_ready = 1;
+                    printf("lord select (map) ready: %d cities\n", s3_strategy_count(st));
+                    ALOG("lord select (map) ready: %d cities", s3_strategy_count(st));
+                }
+            }
+
+            apply_present(p, 2, cw, ch);        /* 与大地图同款：COVER + BILINEAR */
+            s3_strategy_set_month(st, 1);
+            s3_strategy_render(st, cv_map);
+            /* 底部统计 + 肖像：按当前选中君主算 */
+            {
+                int si = s3_lordpick_selected(g_lp);
+                const char *lord = (si >= 0) ? s3_kingdom_lord_name(kd, si) : NULL;
+                int cities = 0, forts = 0, gens = 0;
+                long long troops = 0, people = 0, money = 0;
+                if (lord) {
+                    for (int i = 0; i < s3_strategy_count(st); ++i) {
+                        const S3CityDetail *d = s3_strategy_city_detail(st, i);
+                        if (!d || strcmp(d->lord, lord)) continue;
+                        const char *cn = s3_strategy_city_name(st, i);
+                        /* 關口 = 城名以「關」结尾（雁門關/虎牢關…）；其余算"城"。
+                         * UTF-8 下汉字 3 字节，故比最后 3 字节；名字短于 3 字节时不算關。 */
+                        const size_t cl = cn ? strlen(cn) : 0;
+                        if (cl >= 3 && !strcmp(cn + cl - 3, "關")) ++forts;
+                        else                                       ++cities;
+                        gens   += d->n_generals;
+                        troops += d->reserve;
+                        people += d->people;
+                        money  += d->money;
+                    }
+                }
+                s3_lordpick_set_stats(g_lp, cities, forts, gens, troops, people, money);
+            }
+            s3_lordpick_render(g_lp, cv_map);
+            sango3_presenter_upload(p, cv_map->px);
             if (sango3_presenter_frame(p, &drawn)) break;
+            if (frames && drawn >= frames) break;
 
             S3Pointer pt;
             sango3_presenter_pointer(p, &pt);
-            if (pt.rclick) { mode = 0; app.hover = app.press = 0; }
-            else {
-                static int kpressing = 0;
-                static int32_t kx = -1, ky = -1;
-                if (pt.lclick) { kpressing = 1; kx = (int32_t)pt.lx; ky = (int32_t)pt.ly; }
-                if (!pt.ldown && kpressing) {
-                    kpressing = 0;
-                    if ((int32_t)pt.lx == kx && (int32_t)pt.ly == ky)
-                        s3_kingdom_on_click(kd, kx, ky);
-                }
-                int r = s3_kingdom_result(kd);
-                if (r == 1) {
-                    int sc = s3_kingdom_scenario(kd);
-                    int si = s3_kingdom_selected(kd);
-                    snprintf(start_msg, sizeof start_msg, "%s · 君主 %s（%d 城）",
-                             (sc >= 1 && sc <= 7) ? SCENARIO_NAMES[sc] : "",
-                             s3_kingdom_lord_name(kd, si),
-                             s3_kingdom_lord_cities(kd, si));
-                    if (save_start_state(start_path, kd) == 0) {
-                        printf("start state saved: %s -> %s\n", start_msg, start_path);
-                        ALOG("start saved: %s -> %s", start_msg, start_path);
+            s3_lordpick_on_move(g_lp, pt.inside ? (int32_t)pt.lx : -1,
+                                      pt.inside ? (int32_t)pt.ly : -1);
+            if (pt.rclick) {                       /* 长按/返回 = 回到選擇時期 */
+                mode = 0; app.hover = app.press = 0;
+            } else {
+                static int lp_down = 0;
+                static int32_t lp_x = -1, lp_y = -1;
+                if (pt.lclick) { lp_down = 1; lp_x = (int32_t)pt.lx; lp_y = (int32_t)pt.ly; }
+                if (!pt.ldown && lp_down) {
+                    lp_down = 0;
+                    int idx = -1, ok = 0, cancel = 0;
+                    int consumed = s3_lordpick_on_click(g_lp, lp_x, lp_y, &idx, &ok, &cancel);
+                    if (idx >= 0) {
+                        /* 换君主：重算城池归属 + 选中其主城（面板随之显示） */
+                        const char *lord = s3_kingdom_lord_name(kd, idx);
+                        int mine = s3_strategy_remark_owner(st, lord);
+                        s3_strategy_select(st, s3_strategy_first_city_of(st, lord));
+                        char b[160];
+                        snprintf(b, sizeof b, "已選 %s：%d 城（我方城池已高亮，點其它城可查看）",
+                                 lord, mine);
+                        s3_strategy_set_banner(st, b);
+                        printf("lord select: %s (%d cities)\n", lord, mine);
+                        ALOG("lord select: %s (%d cities)", lord, mine);
+                    } else if (!consumed) {
+                        s3_strategy_on_click(st, lp_x, lp_y);   /* 点地图选城看面板 */
                     }
-                    mode = 3;
-                } else if (r == 2) {
-                    mode = 0; app.hover = app.press = 0;
+                    if (ok) {
+                        int si = s3_lordpick_selected(g_lp);
+                        if (si >= 0) {
+                            int sc = s3_kingdom_scenario(kd);
+                            snprintf(start_msg, sizeof start_msg, "%s · 君主 %s（%d 城）",
+                                     (sc >= 1 && sc <= 7) ? SCENARIO_NAMES[sc] : "",
+                                     s3_kingdom_lord_name(kd, si),
+                                     s3_kingdom_lord_cities(kd, si));
+                            if (save_start_state(start_path, kd) == 0) {
+                                printf("start state saved: %s -> %s\n", start_msg, start_path);
+                                ALOG("start saved: %s -> %s", start_msg, start_path);
+                            }
+                            g_lp_ready = 0;      /* 下次进来重新装载（重开局） */
+                            mode = 3;
+                        }
+                    } else if (cancel) {
+                        g_lp_ready = 0;
+                        mode = 0; app.hover = app.press = 0;
+                    }
                 }
             }
             SDL_Delay(16);
             continue;
         }
+
         if (mode == 3) {
             /* ================= 进入战略层 ================= */
             if (!st) st = s3_strategy_new(read_asset_cb, &ctx, draw_text_cb, &fc);
@@ -1298,6 +1416,8 @@ int main(int argc, char **argv) {
             g_ast = st; g_kd = kd; g_start_path = start_path; g_admin_quit = 0;
             g_pending_group = g_pending_item = -1; g_pending_label[0] = '\0';
             g_pending_city = -1;
+            g_pending_enemy = g_pending_query = 0;
+            s3_strategy_set_banner(st, "");     /* 清掉"选君主"界面的残留文案 */
             s3_picker_close(g_picker);
             s3_admin_set_origin(g_adm, 45 * 2, 36 * 2);
             s3_admin_set_visible(g_adm, 1);

@@ -34,6 +34,11 @@ void s3_kingdom_begin(S3Kingdom *k, int scenario_id, const char *scenario_name);
 /* 追加/累加一个君主；同名君主合并（累加城池/人口/金钱） */
 void s3_kingdom_add_lord(S3Kingdom *k, const char *name,
                          int cities, int people, int money, int custom);
+/* 给已加入的君主补本人属性（取自 General01.ini，按 Name 匹配）—— I2 大地图版列表用。
+ * personality = **相性**（= 原版的"声望"，见定稿 L 区说明）。 */
+void s3_kingdom_set_lord_stats(S3Kingdom *k, const char *name,
+                               int str, int intel, int justice, int morale,
+                               int personality, int portrait);
 
 void s3_kingdom_render(S3Kingdom *k, Sango3Canvas *cv);
 void s3_kingdom_on_click(S3Kingdom *k, int32_t lx, int32_t ly);
@@ -46,6 +51,13 @@ int         s3_kingdom_lord_cities(const S3Kingdom *k, int idx);
 int         s3_kingdom_lord_people(const S3Kingdom *k, int idx);
 int         s3_kingdom_lord_money(const S3Kingdom *k, int idx);
 int         s3_kingdom_lord_custom(const S3Kingdom *k, int idx);  /* 1 = 自定义武将 */
+/* 君主本人属性（I2 大地图版列表用；未补过则为 0） */
+int         s3_kingdom_lord_str(const S3Kingdom *k, int idx);
+int         s3_kingdom_lord_intel(const S3Kingdom *k, int idx);
+int         s3_kingdom_lord_justice(const S3Kingdom *k, int idx);
+int         s3_kingdom_lord_morale(const S3Kingdom *k, int idx);
+int         s3_kingdom_lord_personality(const S3Kingdom *k, int idx);   /* 相性 */
+int         s3_kingdom_lord_portrait(const S3Kingdom *k, int idx);
 int         s3_kingdom_count(const S3Kingdom *k);
 int         s3_kingdom_scenario(const S3Kingdom *k);
 

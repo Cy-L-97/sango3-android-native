@@ -58,6 +58,7 @@ add_library(main SHARED
   ${ENGINE}/src/admin_menu.c
   ${ENGINE}/src/roster.c
   ${ENGINE}/src/gen_picker.c
+  ${ENGINE}/src/lord_picker.c
   ${ENGINE}/src/sango3app.c)
 
 target_include_directories(main PRIVATE ${ENGINE}/src ${FT_SRC}/include)
