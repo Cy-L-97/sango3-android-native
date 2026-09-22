@@ -60,7 +60,8 @@ def run_probe():
 
 
 def parse_dump():
-    recs = {"G": [], "I": [], "S": [], "M": [], "R": []}
+    # F = 军师技（SFMagic.ini，2026-09-22 新增）
+    recs = {"G": [], "I": [], "S": [], "M": [], "F": [], "R": []}
     with open(DUMP, encoding="utf-8") as f:
         for line in f:
             line = line.rstrip("\n")
@@ -87,6 +88,7 @@ def main():
     things = load_json("things.json")
     solds = load_json("soldiers.json")
     magics = load_json("bfmagic.json")
+    sfmagics = load_json("sfmagic.json")
     base = load_json("auto_superattack_targets.json")
     rules = load_json("rules.json")
     lang = load_json("lang_hant2hans.json")["map"]
@@ -95,9 +97,11 @@ def main():
     eq("counts", "items", len(recs["I"]), len(things))
     eq("counts", "soldiers", len(recs["S"]), len(solds))
     eq("counts", "magics", len(recs["M"]), len(magics))
+    eq("counts", "sfmagics", len(recs["F"]), len(sfmagics))
     print(f"  C: G={len(recs['G'])} I={len(recs['I'])} S={len(recs['S'])} "
-          f"M={len(recs['M'])} R={len(recs['R'])}")
-    print(f"  py: G={len(gens)} I={len(things)} S={len(solds)} M={len(magics)}")
+          f"M={len(recs['M'])} F={len(recs['F'])} R={len(recs['R'])}")
+    print(f"  py: G={len(gens)} I={len(things)} S={len(solds)} M={len(magics)} "
+          f"F={len(sfmagics)}")
 
     # ------------------------------------------------------------ 武将
     print()
@@ -146,6 +150,9 @@ def main():
             eq(ctx, "increment", [int(c[5]), int(c[6]), int(c[7])], p["increment"])
             eq(ctx, "strength_bonus", int(c[8]), p["strength_bonus"])
             eq(ctx, "count", c[9], str(p["count"]))
+            # 2026-09-22 新增：搜索可发现率 / 宝物价值（P1·R 区）
+            eq(ctx, "find_rate", int(c[10]), p["find_rate"])
+            eq(ctx, "attraction", int(c[11]), p["attraction"])
         print(f"  ✓ 比对 {len(things)} 件物品")
     else:
         eq("counts", "items", len(recs["I"]), len(things))
@@ -186,9 +193,39 @@ def main():
             eq(ctx, "level", int(c[4]), p["level"])
             eq(ctx, "contribution", int(c[5]), p["contribution"])
             eq(ctx, "attribute", int(c[6]), p["attribute"])
+            # 2026-09-22 新增：可学区间（半开）+ 比武禁用（P 区）
+            eq(ctx, "str_down", int(c[7]), p["str_down"])
+            eq(ctx, "str_up", int(c[8]), p["str_up"])
+            eq(ctx, "int_down", int(c[9]), p["int_down"])
+            eq(ctx, "int_up", int(c[10]), p["int_up"])
+            eq(ctx, "no_arena", int(c[11]), p["no_arena"])
         print(f"  ✓ 比对 {len(magics)} 个武将技")
     else:
         eq("counts", "magics", len(recs["M"]), len(magics))
+
+    # ------------------------------------------------------------ 军师技（2026-09-22 新增）
+    print()
+    print("=" * 76)
+    print("5b) 军师技逐字段比对（SFMagic.ini，定稿 P6）")
+    print("=" * 76)
+    if len(recs["F"]) == len(sfmagics):
+        for c, p in zip(recs["F"], sfmagics):
+            ctx = f"军师技#{p['no']} {p['name']}"
+            eq(ctx, "no", int(c[0]), p["no"])
+            eq(ctx, "name", c[1], p["name"])
+            eq(ctx, "mp", int(c[2]), p["mp"])
+            eq(ctx, "level", int(c[3]), p["level"])
+            eq(ctx, "contribution", int(c[4]), p["contribution"])
+            eq(ctx, "attribute", int(c[5]), p["attribute"])
+            eq(ctx, "str_down", int(c[6]), p["str_down"])
+            eq(ctx, "str_up", int(c[7]), p["str_up"])
+            eq(ctx, "int_down", int(c[8]), p["int_down"])
+            eq(ctx, "int_up", int(c[9]), p["int_up"])
+            eq(ctx, "range", int(c[10]), p["range"])
+            eq(ctx, "enemy_type", int(c[11]), p["enemy_type"])
+        print(f"  ✓ 比对 {len(sfmagics)} 个军师技")
+    else:
+        eq("counts", "sfmagics", len(recs["F"]), len(sfmagics))
 
     # ------------------------------------------------------------ 规则表
     print()

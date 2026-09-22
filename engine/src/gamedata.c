@@ -94,6 +94,9 @@ static void load_items(S3GameData *d, const S3Ini *ini) {
         it->increment[2] = s3_ini_int(s, "Increment3", 0);
         /* 关键：只有武器(Type=2)的 Increment 加武力；书/马/其它一律不计入攻击力 */
         it->strength_bonus = (it->type == 2) ? it->increment[0] : 0;
+        /* 2026-09-22 补（P1/R 区用）：搜索可发现率（0 = 搜不到）、宝物价值（外交赠礼） */
+        it->find_rate  = s3_ini_int(s, "FindRate", 0);
+        it->attraction = s3_ini_int(s, "Attraction", 0);
     }
 }
 
@@ -171,17 +174,20 @@ static void load_soldiers(S3GameData *d, const S3Ini *ini) {
     }
 }
 
-static void load_magics(S3GameData *d, const S3Ini *ini) {
+/* 武将技与军师技字段高度重合 → 同一函数按 section 名加载（2026-09-22 扩展）。
+ * 差异字段：BF 用 NoArena（比武禁用），SF 用 Range / EnemyType（范围/作用对象）。 */
+static void load_magic_table(S3GameData *d, const S3Ini *ini, const char *section,
+                             S3Magic **arr, int *n_arr) {
     int cap = 0;
     for (int i = 0; i < ini->n_sections; ++i) {
         const S3IniSection *s = &ini->sections[i];
-        if (strcmp(s->name, "BF_MAGIC") != 0) continue;
+        if (strcmp(s->name, section) != 0) continue;
         if (!s3_ini_val_at(s, "Name", 0)) continue;
 
-        void *np = grow(d->magics, &cap, d->n_magics + 1, sizeof(S3Magic));
+        void *np = grow(*arr, &cap, *n_arr + 1, sizeof(S3Magic));
         if (!np) return;
-        d->magics = (S3Magic *)np;
-        S3Magic *m = &d->magics[d->n_magics++];
+        *arr = (S3Magic *)np;
+        S3Magic *m = &(*arr)[(*n_arr)++];
         memset(m, 0, sizeof(*m));
 
         m->no = s3_ini_int(s, "No", 0);
@@ -189,10 +195,36 @@ static void load_magics(S3GameData *d, const S3Ini *ini) {
         m->mp           = s3_ini_int(s, "MP", 0);
         m->power        = s3_ini_int(s, "Power", 0);
         m->level        = s3_ini_int(s, "Level", 0);
-        m->contribution = s3_ini_int(s, "Contribution", 0);
+        m->contribution = s3_ini_int(s, "Contribution", 0);   /* 功勋价（定稿 P6/P7） */
         m->attribute    = s3_ini_int(s, "Attribute", 0);
+        /* 可学区间（半开）—— 定稿 P2「不在区间不显示」的数据依据 */
+        m->str_down     = s3_ini_int(s, "StrDown", 0);
+        m->str_up       = s3_ini_int(s, "StrUp", 0);
+        m->int_down     = s3_ini_int(s, "IntDown", 0);
+        m->int_up       = s3_ini_int(s, "IntUp", 0);
+        m->no_arena     = s3_ini_int(s, "NoArena", 0);
+        m->range        = s3_ini_int(s, "Range", 0);
+        m->enemy_type   = s3_ini_int(s, "EnemyType", 0);
         copy_str(m->spec, sizeof m->spec, s3_ini_str(s, "Spec", ""));
     }
+}
+
+static void load_magics(S3GameData *d, const S3Ini *ini) {
+    load_magic_table(d, ini, "BF_MAGIC", &d->magics, &d->n_magics);
+}
+
+static void load_sfmagics(S3GameData *d, const S3Ini *ini) {
+    load_magic_table(d, ini, "SF_MAGIC", &d->sfmagics, &d->n_sfmagics);
+}
+
+/* 定稿 P2/P7：等级 + 武力区间 + 智力区间 三元同时满足才可学。
+ * 区间为半开 [down, up)；up <= down 视为"该维不限制"（BF 表用 0/200，SF 表用 999）。*/
+int s3_magic_learnable(const S3Magic *m, int strength, int intelligence, int level) {
+    if (!m) return 0;
+    if (m->level > 0 && level < m->level) return 0;
+    if (m->str_up > m->str_down && (strength < m->str_down || strength >= m->str_up)) return 0;
+    if (m->int_up > m->int_down && (intelligence < m->int_down || intelligence >= m->int_up)) return 0;
+    return 1;
 }
 
 static void load_rules(S3GameData *d) {
@@ -228,18 +260,20 @@ S3GameData *s3_gamedata_load(const char *setting_dir) {
     char path[1024];
     struct { const char *file; int required; } files[] = {
         { "General01.ini", 1 }, { "Thing.ini", 1 }, { "Soldier.ini", 1 },
-        { "BFMagic.ini",   1 }, { "Game.ini",  0 },
+        { "BFMagic.ini",   1 }, { "Game.ini",  0 }, { "SFMagic.ini", 0 },
     };
-    S3Ini *ini[5] = { NULL, NULL, NULL, NULL, NULL };
+    enum { NFILES = sizeof files / sizeof files[0] };
+    S3Ini *ini[NFILES];
+    for (int i = 0; i < (int)NFILES; ++i) ini[i] = NULL;
 
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < (int)NFILES; ++i) {
         if (join(path, sizeof path, setting_dir, files[i].file) != 0) continue;
         ini[i] = s3_ini_load(path);
         if (!ini[i] && files[i].required) {
             char msg[256];
             snprintf(msg, sizeof msg, "cannot load %s", files[i].file);
             copy_str(d->error, sizeof d->error, msg);
-            for (int k = 0; k < 5; ++k) s3_ini_free(ini[k]);
+            for (int k = 0; k < (int)NFILES; ++k) s3_ini_free(ini[k]);
             return d;
         }
     }
@@ -248,13 +282,15 @@ S3GameData *s3_gamedata_load(const char *setting_dir) {
     if (ini[1]) load_items(d, ini[1]);
     if (ini[0]) load_generals(d, ini[0]);
     if (ini[2]) load_soldiers(d, ini[2]);
-    if (ini[3]) load_magics(d, ini[3]);
+    if (ini[3]) load_magics(d, ini[3]);      /* 武将技 125 */
+    if (ini[5]) load_sfmagics(d, ini[5]);    /* 军师技 23（2026-09-22 新增） */
     load_rules(d);
 
     s3_ini_free(ini[0]);
     s3_ini_free(ini[1]);
     s3_ini_free(ini[2]);
     s3_ini_free(ini[3]);
+    s3_ini_free(ini[5]);
     /* ini[4] 保留在 d->game_ini */
 
     /* 用初始装备求值一次攻击力（不授予技能：开局预设只来自数据） */
@@ -277,6 +313,7 @@ void s3_gamedata_free(S3GameData *d) {
     free(d->items);
     free(d->soldiers);
     free(d->magics);
+    free(d->sfmagics);
     s3_ini_free(d->game_ini);
     free(d);
 }
@@ -300,6 +337,35 @@ const S3Item *s3_gamedata_item_by_name(const S3GameData *d, const char *name) {
     if (!d || !name || !*name) return NULL;
     for (int i = 0; i < d->n_items; ++i)
         if (strcmp(d->items[i].name, name) == 0) return &d->items[i];   /* 首次出现优先 */
+    return NULL;
+}
+
+/* ------------------------------------------------- 武将技 / 军师技 查询（P 区） */
+int s3_gamedata_magic_count(const S3GameData *d) { return d ? d->n_magics : 0; }
+
+const S3Magic *s3_gamedata_magic_at(const S3GameData *d, int idx) {
+    if (!d || idx < 0 || idx >= d->n_magics) return NULL;
+    return &d->magics[idx];
+}
+
+const S3Magic *s3_gamedata_magic_by_no(const S3GameData *d, int no) {
+    if (!d) return NULL;
+    for (int i = 0; i < d->n_magics; ++i)
+        if (d->magics[i].no == no) return &d->magics[i];
+    return NULL;
+}
+
+int s3_gamedata_sfmagic_count(const S3GameData *d) { return d ? d->n_sfmagics : 0; }
+
+const S3Magic *s3_gamedata_sfmagic_at(const S3GameData *d, int idx) {
+    if (!d || idx < 0 || idx >= d->n_sfmagics) return NULL;
+    return &d->sfmagics[idx];
+}
+
+const S3Magic *s3_gamedata_sfmagic_by_no(const S3GameData *d, int no) {
+    if (!d) return NULL;
+    for (int i = 0; i < d->n_sfmagics; ++i)
+        if (d->sfmagics[i].no == no) return &d->sfmagics[i];
     return NULL;
 }
 

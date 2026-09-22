@@ -43,13 +43,14 @@ static int write_dump(const S3GameData *d, const char *out_dir) {
         fprintf(f, "\t%d\t%d\t%d\t%d\t%d\n", g->is_beast, g->rank, g->sex, g->weapon_type, g->portrait);
     }
 
-    fprintf(f, "#I\tname\tdisplay\ttype\tslot\tlevel\tinc1\tinc2\tinc3\tstrength_bonus\tcount\n");
+    fprintf(f, "#I\tname\tdisplay\ttype\tslot\tlevel\tinc1\tinc2\tinc3\tstrength_bonus\tcount"
+               "\tfind_rate\tattraction\n");
     for (int i = 0; i < d->n_items; ++i) {
         const S3Item *it = &d->items[i];
-        fprintf(f, "I\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n",
+        fprintf(f, "I\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\n",
                 it->name, it->display, it->type, it->slot, it->level,
                 it->increment[0], it->increment[1], it->increment[2],
-                it->strength_bonus, it->count);
+                it->strength_bonus, it->count, it->find_rate, it->attraction);
     }
 
     fprintf(f, "#S\tno\tname\tname_adv\tres_id\tstart_hp\tadd_hp\tstart_power\tadd_power\thit_rate\n");
@@ -62,11 +63,23 @@ static int write_dump(const S3GameData *d, const char *out_dir) {
         fprintf(f, "\n");
     }
 
-    fprintf(f, "#M\tno\tname\tmp\tpower\tlevel\tcontribution\tattribute\n");
+    fprintf(f, "#M\tno\tname\tmp\tpower\tlevel\tcontribution\tattribute"
+               "\tstr_down\tstr_up\tint_down\tint_up\tno_arena\n");
     for (int i = 0; i < d->n_magics; ++i) {
         const S3Magic *m = &d->magics[i];
-        fprintf(f, "M\t%d\t%s\t%d\t%d\t%d\t%d\t%d\n",
-                m->no, m->name, m->mp, m->power, m->level, m->contribution, m->attribute);
+        fprintf(f, "M\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+                m->no, m->name, m->mp, m->power, m->level, m->contribution, m->attribute,
+                m->str_down, m->str_up, m->int_down, m->int_up, m->no_arena);
+    }
+
+    /* 军师技（SFMagic.ini，2026-09-22 新增；字段同武将技 + Range/EnemyType） */
+    fprintf(f, "#F\tno\tname\tmp\tlevel\tcontribution\tattribute"
+               "\tstr_down\tstr_up\tint_down\tint_up\trange\tenemy_type\n");
+    for (int i = 0; i < d->n_sfmagics; ++i) {
+        const S3Magic *m = &d->sfmagics[i];
+        fprintf(f, "F\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n",
+                m->no, m->name, m->mp, m->level, m->contribution, m->attribute,
+                m->str_down, m->str_up, m->int_down, m->int_up, m->range, m->enemy_type);
     }
 
     fprintf(f, "#R\tsection\tkey\tvalue\n");
@@ -108,6 +121,30 @@ static int write_summary(S3GameData *d, const char *out_dir) {
     fprintf(f, "counts.items=%d\n",     d->n_items);
     fprintf(f, "counts.soldiers=%d\n",  d->n_soldiers);
     fprintf(f, "counts.magics=%d\n",    d->n_magics);
+    fprintf(f, "counts.sfmagics=%d\n",  d->n_sfmagics);
+    /* P 区自检（2026-09-22）：区间过滤的非空性 —— 有区间约束的技数、比武禁用数、搜不到的物品种数 */
+    {
+        int bf_band = 0, bf_noarena = 0, sf_band = 0;
+        for (int i = 0; i < d->n_magics; ++i) {
+            const S3Magic *m = &d->magics[i];
+            if (m->str_up > m->str_down || m->int_up > m->int_down) ++bf_band;
+            if (m->no_arena) ++bf_noarena;
+        }
+        for (int i = 0; i < d->n_sfmagics; ++i) {
+            const S3Magic *m = &d->sfmagics[i];
+            if (m->str_up > m->str_down || m->int_up > m->int_down) ++sf_band;
+        }
+        int unfindable = 0, gift_ok = 0;
+        for (int i = 0; i < d->n_items; ++i) {
+            if (d->items[i].find_rate == 0) ++unfindable;
+            if (d->items[i].type == 6 && d->items[i].increment[0] > 0) ++gift_ok;
+        }
+        fprintf(f, "p1.magic_with_band=%d\n", bf_band);
+        fprintf(f, "p1.magic_no_arena=%d\n", bf_noarena);
+        fprintf(f, "p1.sfmagic_with_band=%d\n", sf_band);
+        fprintf(f, "p1.items_unfindable=%d\n", unfindable);
+        fprintf(f, "p1.gift_items_with_loyalty=%d\n", gift_ok);
+    }
     fprintf(f, "counts.with_super_attack=%d\n", with_sa);
     fprintf(f, "counts.beasts=%d\n",    beasts);
     fprintf(f, "class_A_base_ge80=%d\n", A);
@@ -214,8 +251,8 @@ int main(int argc, char **argv) {
     if (write_summary(d, argv[2]) != 0) { printf("ERROR: cannot write summary to %s\n", argv[2]); rc = 7; }
 
     if (rc == 0) {
-        printf("OK generals=%d items=%d soldiers=%d magics=%d\n",
-               d->n_generals, d->n_items, d->n_soldiers, d->n_magics);
+    printf("OK generals=%d items=%d soldiers=%d magics=%d sfmagics=%d\n",
+           d->n_generals, d->n_items, d->n_soldiers, d->n_magics, d->n_sfmagics);
         printf("   encoding=%s  language=HANS  soldier_limit=%d\n", enc, d->soldier_limit);
     }
 

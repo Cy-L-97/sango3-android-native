@@ -50,6 +50,8 @@ typedef struct {
     char statement[S3_TEXT_CAP];   /* 说明文字（UTF-8，未转换） */
     int  increment[3];
     int  strength_bonus;           /* 仅 Type=2 武器计入武力，其余为 0 */
+    int  find_rate;                /* Thing.ini 的 FindRate：搜索可发现率（**0 = 搜不到**，如干將/莫邪/奧汀神槍）*/
+    int  attraction;               /* Thing.ini 的 Attraction：宝物价值 24~100（外交赠礼/招揽用，定稿 D1）*/
 } S3Item;
 
 /* Type → 槽位语义（依据 Thing.ini 的 Statement 逐件校准） */
@@ -91,11 +93,20 @@ typedef struct {
     int  hit_rate[10];
 } S3Soldier;
 
-/* ---------------------------------------------------------------- 武将技 */
+/* -------------------------------------------------- 武将技 / 军师技（同一结构）
+ * BFMagic.ini（[BF_MAGIC]，125 个）与 SFMagic.ini（[SF_MAGIC]，23 个）字段高度重合，
+ * 差异只在：BF 有 `NoArena`（比武禁用），SF 有 `Range` / `EnemyType`（范围/作用对象）。
+ * 故共用一个 S3Magic，各表不用的字段留 0。 */
 typedef struct {
     int  no;
     char name[S3_NAME_CAP];
     int  mp, power, level, contribution, attribute;
+    /* 可学区间（定稿 P2/P7）：半开区间 [str_down, str_up) 与 [int_down, int_up)。
+     * 例：飛箭 智[70,100) · 地泉 智[0,49)（文官系）· 突石 武[0,49) · 旋風 武[50,100)（武将系）。
+     * 不在区间内 → **不显示在可学列表**。*/
+    int  str_down, str_up, int_down, int_up;
+    int  no_arena;                 /* 1 = 比武大会禁用（BF 专用）*/
+    int  range, enemy_type;        /* SF 专用：施展范围 / 作用对象 */
     char spec[S3_TEXT_CAP];
 } S3Magic;
 
@@ -111,7 +122,8 @@ typedef struct {
     S3General *generals;  int n_generals;
     S3Item    *items;     int n_items;
     S3Soldier *soldiers;  int n_soldiers;
-    S3Magic   *magics;    int n_magics;
+    S3Magic   *magics;    int n_magics;      /* 武将技 BFMagic.ini（125） */
+    S3Magic   *sfmagics;  int n_sfmagics;    /* 军师技 SFMagic.ini（23，定稿 P6） */
 
     int soldier_limit;             /* 需求②：默认 1200（原版 400） */
     int ok;                        /* 关键表是否全部载入 */
@@ -165,5 +177,17 @@ int s3_gamedata_rule_count(const S3GameData *d);
 
 /* 兵种升级/加成查询（后接战斗系统） */
 const S3Soldier *s3_gamedata_soldier_by_no(const S3GameData *d, int no);
+
+/* ------------------------------------------------- 武将技 / 军师技 查询（P 区） */
+int              s3_gamedata_magic_count(const S3GameData *d);
+const S3Magic   *s3_gamedata_magic_at(const S3GameData *d, int idx);
+const S3Magic   *s3_gamedata_magic_by_no(const S3GameData *d, int no);
+int              s3_gamedata_sfmagic_count(const S3GameData *d);
+const S3Magic   *s3_gamedata_sfmagic_at(const S3GameData *d, int idx);
+const S3Magic   *s3_gamedata_sfmagic_by_no(const S3GameData *d, int no);
+
+/* 定稿 P2/P7 的**可学判定**：等级 + 武力区间 + 智力区间 三元同时满足才可学。
+ * 区间是半开 [down, up)；up 为 0 视为"不限制"（数据里 SF 表用 999 表示无上限）。*/
+int  s3_magic_learnable(const S3Magic *m, int strength, int intelligence, int level);
 
 #endif /* SANGO3_GAMEDATA_H */

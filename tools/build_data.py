@@ -95,6 +95,10 @@ for t in th:
         "increment": inc,
         # 武力加成：只有武器(Type=2)计入；其余槽位不影响攻击力
         "strength_bonus": inc[0] if ty == 2 else 0,
+        # 2026-09-22 补（P1/R 区）：搜索可发现率（**0 = 搜不到**，如干將/莫邪/奧汀神槍）、
+        # 宝物价值（定稿 D1「赠送宝物看宝物等级/稀有度」的数值）
+        "find_rate": to_int(t.get("FindRate")),
+        "attraction": to_int(t.get("Attraction")),
     }
     trecs.append(rec)
     item_by_name.setdefault(rec["name"], rec)
@@ -171,25 +175,45 @@ json.dump(srecs, open(os.path.join(OUT, "soldiers.json"), "w", encoding="utf-8")
           ensure_ascii=False, indent=1)
 summary.append(f"soldiers.json    {len(srecs)} 个兵种")
 
-# ---- 武将技 ----
-bf = read_ini(os.path.join(DATA, "BFMagic.ini"))
-brecs = []
-for b in bf:
-    if b.get("_section") != "BF_MAGIC" or "Name" not in b:
-        continue
-    brecs.append({
-        "no": to_int(b.get("No")),
-        "name": b.get("Name", ""),
-        "mp": to_int(b.get("MP")),
-        "power": to_int(b.get("Power")),
-        "level": to_int(b.get("Level")),
-        "contribution": to_int(b.get("Contribution")),
-        "attribute": to_int(b.get("Attribute")),
-        "spec": b.get("Spec", ""),
-    })
+# ---- 武将技 / 军师技（2026-09-22 扩展：补 Str/Int 区间门槛、NoArena；新增军师技表）----
+def magic_recs(path, section, with_range):
+    out = []
+    for b in read_ini(os.path.join(DATA, path)):
+        if b.get("_section") != section or "Name" not in b:
+            continue
+        rec = {
+            "no": to_int(b.get("No")),
+            "name": b.get("Name", ""),
+            "mp": to_int(b.get("MP")),
+            "power": to_int(b.get("Power")),
+            "level": to_int(b.get("Level")),
+            "contribution": to_int(b.get("Contribution")),   # 功勋价（定稿 P6）
+            "attribute": to_int(b.get("Attribute")),
+            # 可学区间（半开 [down, up)）—— 定稿 P2/P7「不在区间不显示」的数据依据
+            "str_down": to_int(b.get("StrDown")),
+            "str_up": to_int(b.get("StrUp")),
+            "int_down": to_int(b.get("IntDown")),
+            "int_up": to_int(b.get("IntUp")),
+            "spec": b.get("Spec", ""),
+        }
+        if with_range:                                        # 军师技专属
+            rec["range"] = to_int(b.get("Range"))
+            rec["enemy_type"] = to_int(b.get("EnemyType"))
+        else:                                                 # 武将技专属
+            rec["no_arena"] = to_int(b.get("NoArena"))
+        out.append(rec)
+    return out
+
+
+brecs = magic_recs("BFMagic.ini", "BF_MAGIC", with_range=False)
 json.dump(brecs, open(os.path.join(OUT, "bfmagic.json"), "w", encoding="utf-8"),
           ensure_ascii=False, indent=1)
-summary.append(f"bfmagic.json     {len(brecs)} 个武将技")
+summary.append(f"bfmagic.json     {len(brecs)} 个武将技（含区间/NoArena/功勋价）")
+
+srecs_m = magic_recs("SFMagic.ini", "SF_MAGIC", with_range=True)
+json.dump(srecs_m, open(os.path.join(OUT, "sfmagic.json"), "w", encoding="utf-8"),
+          ensure_ascii=False, indent=1)
+summary.append(f"sfmagic.json     {len(srecs_m)} 个军师技（含区间/Range/EnemyType，定稿 P6）")
 
 # ---- 全局规则 ----
 gm = read_ini(os.path.join(DATA, "Game.ini"))
