@@ -310,5 +310,15 @@ int s3_admin_on_click(S3AdminMenu *m, int32_t x, int32_t y) {
         sub_rect(m, m->open, &sx, &sy, &sw, &sh);
         if (x >= sx && x < sx + sw && y >= sy && y < sy + sh) return 1;   /* 框内空白 */
     }
+    /* 兜底：**点空白处 = 收起已展开的子选单**（2026-09-22 用户实测指正 —— 上一版只修了
+     * "选完即收"与"取消回朝堂"，漏了"点开一级按钮后点空白"这条路）。
+     * 与"点同一个一级按钮"同效；没有展开任何组时保持 no-op（返回 0 交上层）。
+     * 安全性：大地图路径先经 s3_admin_hit()（内含 visible 判定）才会调到这里，
+     * 菜单在地图上是隐藏的 → 不会吃掉选城的点击。 */
+    if (m->open >= 0) {
+        m->open = -1;
+        m->hover_item = -1;
+        return 1;
+    }
     return 0;
 }
