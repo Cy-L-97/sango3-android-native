@@ -44,6 +44,8 @@ void s3_admin_free(S3AdminMenu *m);
 
 void s3_admin_set_visible(S3AdminMenu *m, int vis);
 int  s3_admin_visible(const S3AdminMenu *m);
+/* 收起子选单（+ 复位 hover）。进命令阶段/离开朝堂隐藏菜单时一并调用。 */
+void s3_admin_collapse(S3AdminMenu *m);
 void s3_admin_set_zoom(S3AdminMenu *m, int32_t zoom);
 void s3_admin_set_origin(S3AdminMenu *m, int32_t x, int32_t y);
 void s3_admin_set_hint(S3AdminMenu *m, const char *hint);

@@ -811,6 +811,7 @@ static void admin_cancel_pending(void) {
     g_pending_enemy = g_pending_query = 0;
     s3_strategy_set_banner(g_ast, "");
     s3_admin_set_visible(g_adm, 1);
+    s3_admin_collapse(g_adm);       /* 回朝堂时子选单必须是收起态（2026-09-22 用户实测指正） */
 }
 
 /* ---------------------------------------------------- 回主選單（唯一出口）
@@ -858,6 +859,7 @@ static int admin_set_pending_x(int group, int item, const char *label,
     snprintf(g_pending_label, sizeof g_pending_label, "%s", label);
     g_admin_map = 1;
     s3_admin_set_visible(g_adm, 0);          /* 收起菜单 */
+    s3_admin_collapse(g_adm);                /* 子选单也收起（回到朝堂时不应还展着） */
     s3_admin_set_hint(g_adm, "");
     {
         char b[168];
@@ -1463,6 +1465,7 @@ int main(int argc, char **argv) {
             s3_picker_close(g_picker);
             s3_admin_set_origin(g_adm, 45 * 2, 36 * 2);
             s3_admin_set_visible(g_adm, 1);
+            s3_admin_collapse(g_adm);       /* 新开局：子选单从收起态开始 */
             /* 朝堂背景已在 load_cities 后按势力规模选定 */
             s3_strategy_set_month(st, g_month);
             mode = 5;                        /* 先进朝堂（内政阶段），確定后再看地图 */
@@ -1486,6 +1489,9 @@ int main(int argc, char **argv) {
                      * 2026-09-17 用户实机反馈：走「休息→確定」进地图后菜单又冒出来了
                      * （原先只在切进朝堂时 set_visible(1)，切到地图时没复位）。 */
                     s3_admin_set_visible(g_adm, court ? 1 : 0);
+                    /* 进朝堂时从"无展开"开始；离开朝堂（去地图）时子选单也收起 ——
+                     * 否则下次回朝堂会沿用旧展开态（2026-09-22 用户实测指正）。 */
+                    s3_admin_collapse(g_adm);
                     /* 视图切换 → 地图按压状态清零（否则会带着旧坐标"幽灵点击"，见上面注释） */
                     g_map_drag = g_map_moved = g_map_menu = 0;
                     g_map_px = g_map_py = -1;

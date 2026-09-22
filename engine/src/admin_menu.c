@@ -158,6 +158,15 @@ void s3_admin_free(S3AdminMenu *m) {
 
 void s3_admin_set_visible(S3AdminMenu *m, int vis) { if (m) m->visible = vis; }
 int  s3_admin_visible(const S3AdminMenu *m) { return m ? m->visible : 0; }
+
+/* 收起子选单（并把 hover 一并复位）。
+ * 用途：离开朝堂/进命令阶段收起菜单时**同时**收起子选单，
+ * 避免"回到朝堂时子选单还展着、一级按钮还高亮"（2026-09-22 用户实测指正）。 */
+void s3_admin_collapse(S3AdminMenu *m) {
+    if (!m) return;
+    m->open = -1;
+    m->hover_item = -1;
+}
 void s3_admin_set_zoom(S3AdminMenu *m, int32_t zoom) {
     if (m && zoom >= 1 && zoom <= 4) m->zoom = zoom;
 }
@@ -279,12 +288,19 @@ int s3_admin_on_click(S3AdminMenu *m, int32_t x, int32_t y) {
             int32_t ix, iy, iw, ih;
             item_rect(m, m->open, i, &ix, &iy, &iw, &ih);
             if (x >= ix && x < ix + iw && y >= iy && y < iy + ih) {
-                const char *label = GROUPS[m->open].items[i];
+                const int g = m->open;                  /* 派发前先记住组号（下面会复位 open） */
+                const char *label = GROUPS[g].items[i];
                 int done = 0;
-                if (m->on_cmd) done = m->on_cmd(m->cmd_ud, m->open, i, label);
+                if (m->on_cmd) done = m->on_cmd(m->cmd_ud, g, i, label);
+                /* ★ 选完即收起子选单（2026-09-22 用户实测指正）：
+                 * 原先只派发命令、不复位 `open` → 命令**取消**（长按/返回）回到朝堂时，
+                 * 子选单仍展开、一级按钮仍停在 `open == g` 的高亮态（"没点选却展着"）。
+                 * 原版行为也是"选中一项后子选单收起"，故此处统一收起。 */
+                m->open = -1;
+                m->hover_item = -1;
                 if (!done) {
                     char b[160];
-                    snprintf(b, sizeof b, "%s「%s」尚未實現", GROUPS[m->open].label, label);
+                    snprintf(b, sizeof b, "%s「%s」尚未實現", GROUPS[g].label, label);
                     snprintf(m->hint, sizeof m->hint, "%s", b);
                 }
                 return 1;
