@@ -65,6 +65,25 @@ static int ieq(const char *a, const char *b) {
     return *a == *b;
 }
 
+/* ------------------------------------------------------------ 城 / 關口 分类
+ * 权威源：游戏根目录 `LoadCity.txt`（70 条目 = **51 城（索引 0~50）+ 19 關隘（索引 51~69）**）。
+ * ⚠ 不能用"城名以「關」结尾"来判定 —— 19 座關隘里有 9 座不以「關」结尾
+ *   （界橋 / 定陶 / 官渡 / 長阪坡 / 赤壁 / 合肥 / 街亭 / 陳倉 / 五丈原）。
+ *   实测反例（2026-09-22）：張角 12 城实为 **6 城 + 6 關**，却显示成「城數 10 · 關口數 2」。
+ * 说明：本表同时是 S 区「关卡通路」（甲 §22）的关隘全集，实现通路规则时直接复用。 */
+static const char *const S3_FORT_NAMES[] = {
+    "雁門關", "樂陵關", "界橋",   "壺關",   "定陶",   "都陽關", "官渡",
+    "筑陽關", "長阪坡", "建平關", "赤壁",   "合肥",   "虎牢關", "街亭",
+    "陳倉",   "陽平關", "五丈原", "白水關", "葭萌關",
+};
+
+static int city_is_fort(const char *name) {
+    if (!name || !*name) return 0;
+    for (size_t i = 0; i < sizeof S3_FORT_NAMES / sizeof S3_FORT_NAMES[0]; ++i)
+        if (!strcmp(name, S3_FORT_NAMES[i])) return 1;
+    return 0;
+}
+
 static uint8_t *pak_get(PakCtx *c, const char *path, uint32_t *out_len) {
     for (int pass = 0; pass < 2; ++pass) {
         for (int a = c->n_ar - 1; a >= 0; --a) {
@@ -1279,11 +1298,10 @@ int main(int argc, char **argv) {
                         const S3CityDetail *d = s3_strategy_city_detail(st, i);
                         if (!d || strcmp(d->lord, lord)) continue;
                         const char *cn = s3_strategy_city_name(st, i);
-                        /* 關口 = 城名以「關」结尾（雁門關/虎牢關…）；其余算"城"。
-                         * UTF-8 下汉字 3 字节，故比最后 3 字节；名字短于 3 字节时不算關。 */
-                        const size_t cl = cn ? strlen(cn) : 0;
-                        if (cl >= 3 && !strcmp(cn + cl - 3, "關")) ++forts;
-                        else                                       ++cities;
+                        /* 關口判定走权威名单（`LoadCity.txt` 的 19 座關隘），
+                         * 不再用"以「關」结尾" —— 见文件头部 city_is_fort() 说明。 */
+                        if (city_is_fort(cn)) ++forts;
+                        else                  ++cities;
                         gens   += d->n_generals;
                         troops += d->reserve;
                         people += d->people;
