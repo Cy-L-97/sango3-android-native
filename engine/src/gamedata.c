@@ -176,7 +176,7 @@ static void load_soldiers(S3GameData *d, const S3Ini *ini) {
 
 /* 武将技与军师技字段高度重合 → 同一函数按 section 名加载（2026-09-22 扩展）。
  * 差异字段：BF 用 NoArena（比武禁用），SF 用 Range / EnemyType（范围/作用对象）。 */
-static void load_magic_table(S3GameData *d, const S3Ini *ini, const char *section,
+static void load_magic_table(const S3Ini *ini, const char *section,
                              S3Magic **arr, int *n_arr) {
     int cap = 0;
     for (int i = 0; i < ini->n_sections; ++i) {
@@ -210,11 +210,11 @@ static void load_magic_table(S3GameData *d, const S3Ini *ini, const char *sectio
 }
 
 static void load_magics(S3GameData *d, const S3Ini *ini) {
-    load_magic_table(d, ini, "BF_MAGIC", &d->magics, &d->n_magics);
+    load_magic_table(ini, "BF_MAGIC", &d->magics, &d->n_magics);
 }
 
 static void load_sfmagics(S3GameData *d, const S3Ini *ini) {
-    load_magic_table(d, ini, "SF_MAGIC", &d->sfmagics, &d->n_sfmagics);
+    load_magic_table(ini, "SF_MAGIC", &d->sfmagics, &d->n_sfmagics);
 }
 
 /* 定稿 P2/P7：等级 + 武力区间 + 智力区间 三元同时满足才可学。

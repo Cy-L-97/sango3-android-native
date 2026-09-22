@@ -31,6 +31,7 @@
 #include "admin_menu.h"
 #include "roster.h"
 #include "gen_picker.h"
+#include "officer_ui.h"
 #include "lord_picker.h"
 
 #include <SDL.h>
@@ -115,6 +116,54 @@ static int include_cb(const char *name, unsigned char **out_data, size_t *out_n,
     *out_data = (unsigned char *)d;
     *out_n = (size_t)len;
     return 0;
+}
+
+/* ------------------------------------------------- 武将技 / 军师技表（PAK 内 Setting）
+ * 2026-09-22 P1：整备·学技需要 `Contribution`（功勋价）与武/智区间门槛。
+ * app 侧独立解析一次（与 gamedata.c 同字段口径；双验见 verify_data_c.py 的 #F 块）。 */
+static S3Magic g_bf[160]; static int g_n_bf = 0;
+static S3Magic g_sf[32];  static int g_n_sf = 0;
+
+static void load_magic_pak(PakCtx *c, const char *path, const char *section,
+                           S3Magic *arr, int cap, int *n_out) {
+    uint32_t len = 0;
+    uint8_t *d = pak_get(c, path, &len);
+    if (!d) { *n_out = 0; return; }
+    S3Ini *ini = s3_ini_parse_inc(d, len, include_cb, c);
+    free(d);
+    if (!ini) { *n_out = 0; return; }
+    int n = 0;
+    for (int i = 0; i < ini->n_sections && n < cap; ++i) {
+        const S3IniSection *s = &ini->sections[i];
+        if (!s->name || strcmp(s->name, section) != 0) continue;
+        if (!s3_ini_val_at(s, "Name", 0)) continue;
+        S3Magic *m = &arr[n];
+        memset(m, 0, sizeof *m);
+        m->no           = s3_ini_int(s, "No", 0);
+        snprintf(m->name, sizeof m->name, "%s", s3_ini_str(s, "Name", ""));
+        m->mp           = s3_ini_int(s, "MP", 0);
+        m->power        = s3_ini_int(s, "Power", 0);
+        m->level        = s3_ini_int(s, "Level", 0);
+        m->contribution = s3_ini_int(s, "Contribution", 0);
+        m->attribute    = s3_ini_int(s, "Attribute", 0);
+        m->str_down     = s3_ini_int(s, "StrDown", 0);
+        m->str_up       = s3_ini_int(s, "StrUp", 0);
+        m->int_down     = s3_ini_int(s, "IntDown", 0);
+        m->int_up       = s3_ini_int(s, "IntUp", 0);
+        m->no_arena     = s3_ini_int(s, "NoArena", 0);
+        m->range        = s3_ini_int(s, "Range", 0);
+        m->enemy_type   = s3_ini_int(s, "EnemyType", 0);
+        ++n;
+    }
+    s3_ini_free(ini);
+    *n_out = n;
+}
+
+static void load_magics_from_pak(PakCtx *c) {
+    load_magic_pak(c, "Setting\\BFMagic.ini", "BF_MAGIC", g_bf, 160, &g_n_bf);
+    load_magic_pak(c, "Setting\\SFMagic.ini", "SF_MAGIC", g_sf, 32,  &g_n_sf);
+    printf("magic tables: bf=%d sf=%d\n", g_n_bf, g_n_sf);
+    ALOG("magic tables: bf=%d sf=%d", g_n_bf, g_n_sf);
 }
 
 /* ---------------------------------------------------------------- 文本层 */
@@ -443,6 +492,8 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
     static CityBest   bint[96], bstr[96];
     static char gname[421][32];
     static int  gstr[421], gintel[421];
+    /* 2026-09-22 P1 新增：体力/技力/义理/相性（信息块「體力·技力·忠誠」与相性公式要用） */
+    static int  ghp[421], gmp[421], gjustice[421], gpers[421];
     static int  gn = 0;
     memset(gen_n, 0, sizeof gen_n);
     memset(bint,  0, sizeof bint);
@@ -464,6 +515,10 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
                     snprintf(gname[gn], sizeof gname[gn], "%.31s", nm);
                     gstr[gn]   = s3_ini_int(sec, "Strength", 0);
                     gintel[gn] = s3_ini_int(sec, "Intelligence", 0);
+                    ghp[gn]       = s3_ini_int(sec, "HP", 0);
+                    gmp[gn]       = s3_ini_int(sec, "MP", 0);
+                    gjustice[gn]  = s3_ini_int(sec, "Justice", 0);
+                    gpers[gn]     = s3_ini_int(sec, "Personality", 0);
                     ++gn;
                 }
                 s3_ini_free(gi);
@@ -493,9 +548,12 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
                     nc_add(gen_n, 96, buf, 1);
                     if (gnm && *gnm) {
                         int gi_str = 0, gi_intel = 0;
+                        int gi_hp = 0, gi_mp = 0, gi_jus = 0, gi_pers = 0;
                         for (int g = 0; g < gn; ++g) {
                             if (!strcmp(gname[g], gnm)) {
                                 gi_str = gstr[g]; gi_intel = gintel[g];
+                                gi_hp = ghp[g]; gi_mp = gmp[g];
+                                gi_jus = gjustice[g]; gi_pers = gpers[g];
                                 cb_take(bint, 96, buf, gnm, gintel[g]);
                                 cb_take(bstr, 96, buf, gnm, gstr[g]);
                                 break;
@@ -503,7 +561,9 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
                         }
                         /* 名册：`,野` = 在野（不能作为执行者，只能被招募/搜索） */
                         int wild = (strstr(v, ",野") != NULL) ? 1 : 0;
-                        if (roster) s3_roster_add(roster, gnm, buf, gi_str, gi_intel, wild);
+                        if (roster)
+                            s3_roster_add_ex(roster, gnm, buf, gi_str, gi_intel,
+                                             gi_hp, gi_mp, gi_jus, gi_pers, wild);
                     }
                 }
                 s3_ini_free(gi);
@@ -700,6 +760,12 @@ static int     g_map_drag = 0, g_map_moved = 0, g_map_menu = 0;
 static int32_t g_map_px = -1, g_map_py = -1;
 static S3Roster    *g_roster = NULL;        /* 武将名册（执行者 + 月度行动限制） */
 static S3GenPicker *g_picker = NULL;        /* 执行者选择界面 */
+/* P1（2026-09-22）：武将信息块 + 整备·学技列表 */
+static S3OfficerUI *g_oui = NULL;
+static const S3Magic *g_oui_list[256];      /* 已过滤的可学技（武将技在前、军师技在后） */
+static int            g_oui_sf[256];        /* 0 = 武将技 · 1 = 军师技 */
+static int            g_oui_n = 0;
+static int            g_oui_off = -1;       /* 正在学技的武将（roster 下标） */
 static S3LordPick  *g_lp = NULL;            /* 選擇君主（大地图版，I2） */
 static int          g_lp_ready = 0;         /* 1 = 该界面已装载地图+城池（避免重复载入） */
 
@@ -719,16 +785,67 @@ static void admin_say(const char *fmt, ...) {
  * 已删除（选中城改由 g_pending_city 携带）。后续 移動/人才 若需要"当前城"语义，
  * 从 git 历史取回即可。 */
 
+/* 某城的太守（= 该势力君主）名 —— 信息块「君主」行用。找不到返回 NULL。 */
+static const char *admin_city_lord_name(const char *city) {
+    if (!g_ast || !city || !*city) return NULL;
+    for (int i = 0; i < s3_strategy_count(g_ast); ++i) {
+        const char *n = s3_strategy_city_name(g_ast, i);
+        if (n && !strcmp(n, city)) {
+            const S3CityDetail *d = s3_strategy_city_detail(g_ast, i);
+            return d ? d->lord : NULL;
+        }
+    }
+    return NULL;
+}
+
 /* 情報（定稿 F2）：展示一名武将/军师的详情（目标可为**敌将**）。
  * 纯查询 —— 不消耗月度行动、不需要执行者（定稿 F2 原文未提执行者，
- * 与 F1「指派一名武将/军师执行」的写法不同，故按"纯查询"实现，实测再校准）。 */
+ * 与 F1「指派一名武将/军师执行」的写法不同，故按"纯查询"实现，实测再校准）。
+ * 2026-09-22（P1/U-1）：展示形式改为**原版 Text.ini 9045 排版的信息块**
+ * （戰績/君主/武力/體力/等級/智力/技力/忠誠/士氣/帶兵數/功勳/經驗值），点击关闭。 */
 static void admin_show_officer(int off_idx) {
     const S3Officer *o = (off_idx >= 0) ? s3_roster_at(g_roster, off_idx) : NULL;
     if (!o) { admin_say("情報：查無此人"); return; }
-    admin_say("情報：%s · 所屬 %s · 武力 %d · 智力 %d · 等級 %d · 帶兵上限 %d · %s",
-              o->name, o->city[0] ? o->city : "（無屬地）",
-              o->str, o->intel, o->level, s3_officer_troop_limit(o),
+    if (g_oui) s3_oui_show_card(g_oui, o, admin_city_lord_name(o->city));
+    admin_say("情報：%s（%s）——詳情已顯示，點擊關閉", o->name,
               o->wild ? "在野" : (o->mine ? "我方" : "他方"));
+    printf("info: %s 所屬=%s 武=%d 智=%d 級=%d 忠誠=%d 功勳=%d 帶兵=%d/%d\n",
+           o->name, o->city, o->str, o->intel, o->level, o->loyalty, o->merit,
+           o->troops, s3_officer_troop_limit(o));
+    ALOG("info: %s city=%s str=%d int=%d lv=%d loyalty=%d merit=%d troops=%d/%d",
+         o->name, o->city, o->str, o->intel, o->level, o->loyalty, o->merit,
+         o->troops, s3_officer_troop_limit(o));
+}
+
+/* 整备·学技（定稿 C4② / P6 / P7）：列出该武将**当前可学**的技。
+ *   · 过滤 = 等级 + 武力区间[StrDown,StrUp) + 智力区间[IntDown,IntUp)（原版 BFMagic/SFMagic 数据）；
+ *   · 已学的不再列出（定稿 P2：学会即永久保留、不遗忘）；
+ *   · 武将技（125）在前、军师技（23）在后，选中后由调用方扣功勋。
+ * 返回：列表条数。 */
+static int officer_learn_open(int off_idx) {
+    const S3Officer *o = (off_idx >= 0) ? s3_roster_at(g_roster, off_idx) : NULL;
+    if (!o || !g_oui) return 0;
+    g_oui_n = 0;
+    for (int i = 0; i < g_n_bf && g_oui_n < 256; ++i) {
+        const S3Magic *m = &g_bf[i];
+        if (s3_officer_knows_bf(o, m->no)) continue;
+        if (!s3_magic_learnable(m, o->str, o->intel, o->level)) continue;
+        g_oui_list[g_oui_n] = m; g_oui_sf[g_oui_n] = 0; ++g_oui_n;
+    }
+    for (int i = 0; i < g_n_sf && g_oui_n < 256; ++i) {
+        const S3Magic *m = &g_sf[i];
+        if (s3_officer_knows_sf(o, m->no)) continue;
+        if (!s3_magic_learnable(m, o->str, o->intel, o->level)) continue;
+        g_oui_list[g_oui_n] = m; g_oui_sf[g_oui_n] = 1; ++g_oui_n;
+    }
+    g_oui_off = off_idx;
+    s3_oui_show_learn(g_oui, o, g_oui_list, g_oui_n, 0);
+    admin_say("整備：%s 可學 %d 種（功勳 %d）——選一項學習", o->name, g_oui_n, o->merit);
+    printf("learn list: %s lv=%d str=%d int=%d merit=%d learnable=%d\n",
+           o->name, o->level, o->str, o->intel, o->merit, g_oui_n);
+    ALOG("learn list: %s lv=%d str=%d int=%d merit=%d learnable=%d",
+         o->name, o->level, o->str, o->intel, o->merit, g_oui_n);
+    return g_oui_n;
 }
 
 /* 在选定城池上、由选定的执行者执行待执行命令。
@@ -926,9 +1043,10 @@ static int admin_cmd_cb(void *ud, int group, int item, const char *label) {
     }
 
     /* ---- 需要城池 + 执行者的命令 → 挂起，切大地图选城（原版指令流） ----
-     * 內政 搜索/開發 · 軍政 徵兵/訓練（移動/人才/物品/戰爭/整備/調兵等占位） */
+     * 內政 搜索/開發 · 軍政 徵兵/訓練/**整備**（移動/人才/物品/戰爭/調兵等占位）
+     * 整備 = 学武将技/军师技（P1，2026-09-22）：选城 → 选执行者 → 弹可学技列表。 */
     if ((group == 0 && (item == 1 || item == 2)) ||
-        (group == 1 && (item == 0 || item == 1)))
+        (group == 1 && (item == 0 || item == 1 || item == 3)))
         return admin_set_pending(group, item, label);
     return 0;   /* 其余：占位，菜单自动提示「尚未實現」 */
 }
@@ -1148,6 +1266,9 @@ int main(int argc, char **argv) {
     if (s3_font_init(fonts_dir) == 0 && s3_font_ready())
         for (int k = 0; k < 4; ++k) fc.hd[k] = s3_font_open(S3_FONT_HD, font_size_of(k), S3_LANG_HANS);
     fc.ready = (fc.hd[0] || fc.hd[1] || fc.hd[2]);
+
+    /* P1（2026-09-22）：武将技/军师技表（整备·学技用） */
+    load_magics_from_pak(&ctx);
 
     App app;
     memset(&app, 0, sizeof app);
@@ -1456,6 +1577,7 @@ int main(int argc, char **argv) {
             if (!g_adm) g_adm = s3_admin_new(read_asset_cb, &ctx, draw_text_cb, &fc,
                                             admin_cmd_cb, NULL);
             if (!g_picker) g_picker = s3_picker_new(draw_text_cb, &fc);
+            if (!g_oui)    g_oui    = s3_oui_new(draw_text_cb, &fc);
             /* 名册的 new/clear 已提前到 load_cities 之前（BUG-1） */
             g_ast = st; g_kd = kd; g_start_path = start_path; g_admin_quit = 0;
             g_pending_group = g_pending_item = -1; g_pending_label[0] = '\0';
@@ -1509,6 +1631,7 @@ int main(int argc, char **argv) {
             s3_strategy_render(st, cvc);
             s3_admin_render(g_adm, cvc);
             s3_picker_render(g_picker, cvc);
+            s3_oui_render(g_oui, cvc);          /* P1：信息块 / 整备·学技（最上层） */
             sango3_presenter_upload(p, cvc->px);
             if (sango3_presenter_frame(p, &drawn)) break;
 
@@ -1516,6 +1639,50 @@ int main(int argc, char **argv) {
             sango3_presenter_pointer(p, &pt);
             s3_admin_on_move(g_adm, pt.inside ? (int32_t)pt.lx : -1,
                                    pt.inside ? (int32_t)pt.ly : -1);
+            /* ---- P1：武将信息块 / 整备·学技面板 —— 激活时独占事件（最上层） ---- */
+            if (s3_oui_active(g_oui)) {
+                static int ou_down = 0;
+                static int32_t ou_x = -1, ou_y = -1;
+                s3_oui_on_move(g_oui, pt.inside ? (int32_t)pt.lx : -1,
+                                      pt.inside ? (int32_t)pt.ly : -1);
+                if (pt.rclick) {
+                    s3_oui_close(g_oui);
+                } else {
+                    if (pt.lclick) { ou_down = 1; ou_x = (int32_t)pt.lx; ou_y = (int32_t)pt.ly; }
+                    if (!pt.ldown && ou_down) {
+                        ou_down = 0;
+                        const int oui_m = s3_oui_mode(g_oui);
+                        const int sel  = s3_oui_on_click(g_oui, ou_x, ou_y);
+                        if (sel >= 0 && oui_m == S3_OUI_LEARN) {
+                            const int off = g_oui_off;
+                            S3Officer *o = (off >= 0) ? s3_roster_mut(g_roster, off) : NULL;
+                            const S3Magic *m = (sel < g_oui_n) ? g_oui_list[sel] : NULL;
+                            if (o && m) {
+                                if (o->merit < m->contribution) {
+                                    /* 对应 Text.ini 9042「功勳不足」 */
+                                    admin_say("功勳不足：學「%s」需 %d，目前 %d",
+                                              m->name, m->contribution, o->merit);
+                                } else {
+                                    s3_officer_spend_merit(o, m->contribution);
+                                    if (g_oui_sf[sel]) s3_officer_learn_sf(o, m->no);
+                                    else               s3_officer_learn_bf(o, m->no);
+                                    /* 对应 Text.ini 9043/9044「獲得武將技/軍師技 %s」 */
+                                    admin_say("獲得%s %s（功勳 -%d → %d）",
+                                              g_oui_sf[sel] ? "軍師技" : "武將技",
+                                              m->name, m->contribution, o->merit);
+                                    printf("learn: %s <- %s(%s) merit_left=%d\n", o->name,
+                                           m->name, g_oui_sf[sel] ? "SF" : "BF", o->merit);
+                                    ALOG("learn: %s <- %s(%s) merit_left=%d", o->name,
+                                         m->name, g_oui_sf[sel] ? "SF" : "BF", o->merit);
+                                    officer_learn_open(off);   /* 刷新（已学的不再列出） */
+                                }
+                            }
+                        }
+                    }
+                }
+                SDL_Delay(16);
+                continue;
+            }
             /* ---- 执行者选择界面：激活时独占事件（定稿 A1） ---- */
             if (s3_picker_active(g_picker)) {
                 static int pk_down = 0;
@@ -1540,6 +1707,16 @@ int main(int argc, char **argv) {
                                 char b[168];
                                 snprintf(b, sizeof b,
                                          "「情報」：已查看，可繼續點選其它城池（長按返回朝堂）");
+                                s3_strategy_set_banner(g_ast, b);
+                            } else if (g_pending_group == 1 && g_pending_item == 3) {
+                                /* 整備·學技（定稿 C4② / P6 / P7）：不派将出去办事，
+                                 * 也不消耗月度行动（与 B5「物品」同类：只花资源/改配置）。
+                                 * 实现注 · 待用户实机确认。 */
+                                s3_picker_close(g_picker);
+                                officer_learn_open(off);
+                                char b[168];
+                                snprintf(b, sizeof b,
+                                         "「整備」：選一項學習（面板外/長按關閉）");
                                 s3_strategy_set_banner(g_ast, b);
                             } else {
                                 admin_execute_pending(g_pending_city, off);

@@ -37,6 +37,15 @@ int s3_roster_base_level(const S3Roster *r) { return r ? r->base_level : 1; }
 
 int s3_roster_add(S3Roster *r, const char *name, const char *city,
                   int str, int intel, int wild) {
+    return s3_roster_add_ex(r, name, city, str, intel, 0, 0, 0, 0, wild);
+}
+
+/* 完整版（2026-09-22 P1）：额外带入 体力/技力/义理/相性。
+ * **忠诚度初值 = 义理**（定稿 O1；用户 2026-09-22 裁决）—— 数据实测义理 19~100、均值 50.5，
+ * 正好解释甲文档"吕布剩 30 忠诚就降、夏侯惇要等到个位数"。 */
+int s3_roster_add_ex(S3Roster *r, const char *name, const char *city,
+                     int str, int intel, int hp, int mp,
+                     int justice, int personality, int wild) {
     if (!r || !name || !*name || r->n >= S3_ROSTER_MAX) return -1;
     S3Officer *o = &r->o[r->n];
     memset(o, 0, sizeof *o);
@@ -46,6 +55,15 @@ int s3_roster_add(S3Roster *r, const char *name, const char *city,
     o->intel = intel;
     o->level = r->base_level;           /* 原版无等级数据：开局 = 剧本序号，之后运行时成长 */
     o->wild  = wild ? 1 : 0;
+    /* ---- P1 新增 ---- */
+    o->hp_max = o->hp = (hp > 0) ? hp : 1;
+    o->mp_max = o->mp = (mp > 0) ? mp : 1;
+    o->justice     = justice;
+    o->personality = personality;
+    o->loyalty     = justice;           /* 定稿 O1：初值 = 义理 */
+    o->merit       = S3_MERIT_INITIAL;  /* 【待测】见 roster.h 的说明（战斗线落地后改回 0） */
+    o->wins = o->losses = 0;
+    o->troops = 0;                      /* 由「調兵」分配（本批未做） */
     return r->n++;
 }
 
@@ -237,4 +255,72 @@ int s3_officer_troop_limit(const S3Officer *o) {
     if (lv < 1) lv = 1;
     if (lv > S3_LEVEL_MAX) lv = S3_LEVEL_MAX;
     return lv * S3_TROOPS_PER_LEVEL;
+}
+
+/* ================================================================== P1（2026-09-22）
+ * 忠诚度 / 功勋 / 已学技 / 相性相似度 —— 定稿 O 区、P 区、X-2。
+ * 口径来源：用户 2026-09-22 在 docs/P1-忠诚度·功勋·相性·外交_调研复核表.md 的裁决。 */
+
+void s3_officer_set_loyalty(S3Officer *o, int v) {
+    if (!o) return;
+    if (v < 0) v = 0;
+    if (v > 100) v = 100;                 /* 定稿 O1：忠诚度 0~100 运行时值 */
+    o->loyalty = v;
+}
+
+void s3_officer_add_loyalty(S3Officer *o, int delta) {
+    if (!o) return;
+    s3_officer_set_loyalty(o, o->loyalty + delta);
+}
+
+void s3_officer_add_merit(S3Officer *o, int amount) {
+    if (!o || amount <= 0) return;
+    o->merit += amount;                   /* 功勋不设上限（用户 2026-09-22 裁决） */
+}
+
+int s3_officer_spend_merit(S3Officer *o, int amount) {
+    if (!o || amount < 0) return 0;
+    if (o->merit < amount) return 0;      /* 对应 Text.ini 9042「功勳不足」 */
+    o->merit -= amount;
+    return 1;
+}
+
+int s3_officer_knows_bf(const S3Officer *o, int no) {
+    if (!o || no <= 0) return 0;
+    for (int i = 0; i < o->n_learn_bf; ++i) if (o->learn_bf[i] == no) return 1;
+    return 0;
+}
+
+int s3_officer_knows_sf(const S3Officer *o, int no) {
+    if (!o || no <= 0) return 0;
+    for (int i = 0; i < o->n_learn_sf; ++i) if (o->learn_sf[i] == no) return 1;
+    return 0;
+}
+
+int s3_officer_learn_bf(S3Officer *o, int no) {
+    if (!o || no <= 0) return 3;
+    if (s3_officer_knows_bf(o, no)) return 1;              /* 定稿 P2：已学不重复、不遗忘 */
+    if (o->n_learn_bf >= S3_MAX_LEARN_BF) return 2;
+    o->learn_bf[o->n_learn_bf++] = no;
+    return 0;
+}
+
+int s3_officer_learn_sf(S3Officer *o, int no) {
+    if (!o || no <= 0) return 3;
+    if (s3_officer_knows_sf(o, no)) return 1;
+    if (o->n_learn_sf >= S3_MAX_LEARN_SF) return 2;
+    o->learn_sf[o->n_learn_sf++] = no;
+    return 0;
+}
+
+/* 相性相似度（定稿 X-2 **方案 B**，用户 2026-09-22 裁决）：
+ * 数据依据 —— Personality 实测 1~149、按 25/75/125 聚成派系（派系间恒差 50），
+ * 两两 |差| 均值 45.7 / 中位 41，故用**分段**表达"同派系 / 跨派系"比线性更贴合语义。 */
+int s3_personality_similarity(int a, int b) {
+    int d = a - b; if (d < 0) d = -d;
+    if (d <= 10)  return 100;
+    if (d <= 24)  return 85;
+    if (d <= 49)  return 65;
+    if (d <= 99)  return 40;
+    return 15;
 }

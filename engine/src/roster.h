@@ -31,6 +31,17 @@ extern "C" {
 #define S3_TRAIN_MORALE_MIN 25
 #define S3_TRAIN_MORALE_MAX 30
 
+/* 功勋初始值（P 区）。【待测 · 2026-09-22】原版无此数据，且**功勋来源（战斗 K8 / 比武 Q2）
+ * 尚未实现** —— 取 0 会让「整备·学技」永远显示「功勳不足」，无法实机验收。
+ * 故暂给 500（够学 2 个 180 功勋的基础技），并在复核表里标注"先按当前值实现、实测再调"。
+ * 战斗线落地后应改回 0（由战斗/比武产出）。 */
+#define S3_MERIT_INITIAL 500
+
+/* 已学技上限（定稿 P2：学会即永久保留，属性回落也不遗忘）。
+ * 武将技 125 + 军师技 23，故给足容量；每人固定数组，不动态分配。 */
+#define S3_MAX_LEARN_BF 128
+#define S3_MAX_LEARN_SF 32
+
 typedef struct {
     char name[S3_OFFICER_NAME_CAP];
     char city[S3_CITY_NAME_CAP];    /* 所在城池名（""=未定） */
@@ -41,6 +52,18 @@ typedef struct {
     int  wild;                      /* 1 = 在野（不可作为执行者，只能被招募/搜索） */
     int  mine;                      /* 所在城池是否我方 */
     int  acted;                     /* 本回合已执行过指令（回合结束清空） */
+
+    /* ---------------- 2026-09-22 P1 新增（定稿 O 区 / P 区 / U-1） ---------------- */
+    int  hp, hp_max;                /* 體力 / 上限（General01 的 HP；战斗未做前为静态） */
+    int  mp, mp_max;                /* 技力 / 上限（General01 的 MP） */
+    int  justice;                   /* 义理（**隐藏属性**：忠诚初值来源 + 招降/离间因子） */
+    int  personality;               /* 相性（**隐藏属性**：招揽/招降/离间/同盟公式用） */
+    int  loyalty;                   /* 忠诚度（界面「忠」，0~100；**初值 = 义理**，用户 2026-09-22 裁决） */
+    int  merit;                     /* 功勋（P 区：整备学技消费；来源 = 战斗/比武/事件） */
+    int  wins, losses;              /* 战绩（信息块 9045 的「戰績 %d勝%d敗」） */
+    int  troops;                    /* 当前带兵数（上限 = 等级×40；由「調兵」分配，未做前恒 0） */
+    int  learn_bf[S3_MAX_LEARN_BF]; int n_learn_bf;   /* 已学武将技编号（No） */
+    int  learn_sf[S3_MAX_LEARN_SF]; int n_learn_sf;   /* 已学军师技编号（No） */
 } S3Officer;
 
 typedef struct S3Roster S3Roster;
@@ -55,6 +78,11 @@ int       s3_roster_base_level(const S3Roster *r);
 /* 追加一名武将；返回下标，满员返回 -1。wild: 名字后带 ,野 */
 int  s3_roster_add(S3Roster *r, const char *name, const char *city,
                    int str, int intel, int wild);
+/* 完整版（2026-09-22 P1）：额外带入 体力/技力/义理/相性；
+ * **忠诚度初值 = 义理**（定稿 O1，用户 2026-09-22 裁决），功勋/战绩/带兵/已学技归零。 */
+int  s3_roster_add_ex(S3Roster *r, const char *name, const char *city,
+                      int str, int intel, int hp, int mp,
+                      int justice, int personality, int wild);
 /* 按城名批量标记"是否我方"（城池表建好后调用一次） */
 void s3_roster_mark_city(S3Roster *r, const char *city, int mine);
 
@@ -93,6 +121,28 @@ int  s3_roster_officer_count_in_city(const S3Roster *r, const char *city);
 
 /* 单将带兵上限（等级×40，等级上限 30） */
 int  s3_officer_troop_limit(const S3Officer *o);
+
+/* ---------------------------------------------- P1（2026-09-22，定稿 O 区/P 区）
+ * 忠诚度：0~100，初值 = 义理（add_ex 内自动设置）。add_loyalty 会把结果钳在 0~100。 */
+void s3_officer_add_loyalty(S3Officer *o, int delta);
+void s3_officer_set_loyalty(S3Officer *o, int v);
+
+/* 功勋：独立资源。战斗/比武/事件来源待接（K8/Q2），本批先提供累加入口。 */
+void s3_officer_add_merit(S3Officer *o, int amount);
+/* 消费功勋（整备学技用）：成功返回 1，功勋不足返回 0。 */
+int  s3_officer_spend_merit(S3Officer *o, int amount);
+
+/* 已学技（定稿 P2：学会即永久保留，属性回落不遗忘）
+ * 返回：0 = 新学会 · 1 = 已学过（不重复）· 2 = 名额满 · 3 = 参数非法 */
+int  s3_officer_learn_bf(S3Officer *o, int no);
+int  s3_officer_learn_sf(S3Officer *o, int no);
+int  s3_officer_knows_bf(const S3Officer *o, int no);
+int  s3_officer_knows_sf(const S3Officer *o, int no);
+
+/* 相性相似度（定稿 X-2 方案 B，用户 2026-09-22 裁决）：
+ * |差| ≤10 → 100 · ≤24 → 85 · ≤49 → 65 · ≤99 → 40 · ≥100 → 15（0~100）。
+ * 用于搜索招揽 / 招降 / 离间 / 同盟成功率。 */
+int  s3_personality_similarity(int a, int b);
 
 #ifdef __cplusplus
 }
