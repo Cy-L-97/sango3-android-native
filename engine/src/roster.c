@@ -249,12 +249,44 @@ int s3_roster_officer_count_in_city(const S3Roster *r, const char *city) {
     return k;
 }
 
+/* 补填静态档案（2026-09-23 整备界面用）。名字字段截断到 31 字节以对齐 S3_OFFICER_NAME_CAP。 */
+void s3_officer_set_profile(S3Officer *o, int rank_no, int portrait,
+                            const char *weapon, const char *book, const char *horse,
+                            const int *super_attack, int n_sa,
+                            const int *soldier_type, int n_st) {
+    if (!o) return;
+    o->rank_no  = rank_no;
+    o->portrait = portrait;
+    snprintf(o->weapon, sizeof o->weapon, "%.31s", weapon ? weapon : "");
+    snprintf(o->book,   sizeof o->book,   "%.31s", book   ? book   : "");
+    snprintf(o->horse,  sizeof o->horse,  "%.31s", horse  ? horse  : "");
+    o->n_super_attack = 0;
+    if (super_attack) {
+        for (int i = 0; i < n_sa && i < S3_MAX_SA_SLOT; ++i)
+            o->super_attack[o->n_super_attack++] = super_attack[i];
+    }
+    o->n_soldier_type = 0;
+    if (soldier_type) {
+        for (int i = 0; i < n_st && i < S3_MAX_SQUAD; ++i)
+            o->soldier_type[o->n_soldier_type++] = soldier_type[i];
+    }
+}
+
 int s3_officer_troop_limit(const S3Officer *o) {
     if (!o) return 0;
     int lv = o->level;
     if (lv < 1) lv = 1;
     if (lv > S3_LEVEL_MAX) lv = S3_LEVEL_MAX;
     return lv * S3_TROOPS_PER_LEVEL;
+}
+
+/* 定稿 J8：带兵上限 = 等级×40 + 官职加成。
+ * ⚠ 原版是**仅官位值**（GenTitle.ini 的 Soldiers，驃騎將軍 400）—— 差异已登记在
+ *   docs/城池信息面板与行政菜单.md 第八节，待用户拍板是否改成原版口径。 */
+int s3_officer_troop_limit_ex(const S3Officer *o, int rank_soldiers) {
+    int base = s3_officer_troop_limit(o);
+    if (rank_soldiers > 0) base += rank_soldiers;
+    return base;
 }
 
 /* ================================================================== P1（2026-09-22）

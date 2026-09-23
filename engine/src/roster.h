@@ -41,6 +41,10 @@ extern "C" {
  * 武将技 125 + 军师技 23，故给足容量；每人固定数组，不动态分配。 */
 #define S3_MAX_LEARN_BF 128
 #define S3_MAX_LEARN_SF 32
+/* 整备界面用（2026-09-23）：必杀技槽 8（同 gamedata.h 的 S3_MAX_SA）、小队 8（定稿 N1）。
+ * 本头文件不引用 gamedata.h，故在此单列同值常量，避免循环依赖。 */
+#define S3_MAX_SA_SLOT 8
+#define S3_MAX_SQUAD   8
 
 typedef struct {
     char name[S3_OFFICER_NAME_CAP];
@@ -61,9 +65,18 @@ typedef struct {
     int  loyalty;                   /* 忠诚度（界面「忠」，0~100；**初值 = 义理**，用户 2026-09-22 裁决） */
     int  merit;                     /* 功勋（P 区：整备学技消费；来源 = 战斗/比武/事件） */
     int  wins, losses;              /* 战绩（信息块 9045 的「戰績 %d勝%d敗」） */
-    int  troops;                    /* 当前带兵数（上限 = 等级×40；由「調兵」分配，未做前恒 0） */
+    int  troops;                    /* 当前带兵数（上限 = 等级×40 + 官职加成；由「調兵」分配） */
     int  learn_bf[S3_MAX_LEARN_BF]; int n_learn_bf;   /* 已学武将技编号（No） */
     int  learn_sf[S3_MAX_LEARN_SF]; int n_learn_sf;   /* 已学军师技编号（No） */
+
+    /* ---------------- 2026-09-23 整备界面（`ARRAY` root）所需 ---------------- */
+    int  rank_no;                   /* 官位号 = General01 的 Rank → GenTitle.ini 的 No（驃騎將軍…） */
+    int  portrait;                  /* 肖像号 → Shape\Portrait\Portrait{号}.SHP */
+    char weapon[S3_OFFICER_NAME_CAP];   /* 装备槽：武器（General01 的 Weapon） */
+    char book[S3_OFFICER_NAME_CAP];     /* 装备槽：书 */
+    char horse[S3_OFFICER_NAME_CAP];    /* 装备槽：马 */
+    int  super_attack[S3_MAX_SA_SLOT];  int n_super_attack;   /* 开局预设必杀技（General01 SuperAttack） */
+    int  soldier_type[S3_MAX_SQUAD];    int n_soldier_type;   /* 8 个小队的兵种号（0~8） */
 } S3Officer;
 
 typedef struct S3Roster S3Roster;
@@ -83,6 +96,13 @@ int  s3_roster_add(S3Roster *r, const char *name, const char *city,
 int  s3_roster_add_ex(S3Roster *r, const char *name, const char *city,
                       int str, int intel, int hp, int mp,
                       int justice, int personality, int wild);
+
+/* 补填"静态档案"（2026-09-23 整备界面用）：官位号 / 肖像号 / 三装备槽 /
+ * 开局预设必杀技 / 8 个小队的兵种。add_ex 之后立刻调用（数据来自 General01）。 */
+void s3_officer_set_profile(S3Officer *o, int rank_no, int portrait,
+                            const char *weapon, const char *book, const char *horse,
+                            const int *super_attack, int n_sa,
+                            const int *soldier_type, int n_st);
 /* 按城名批量标记"是否我方"（城池表建好后调用一次） */
 void s3_roster_mark_city(S3Roster *r, const char *city, int mine);
 
@@ -121,6 +141,9 @@ int  s3_roster_officer_count_in_city(const S3Roster *r, const char *city);
 
 /* 单将带兵上限（等级×40，等级上限 30） */
 int  s3_officer_troop_limit(const S3Officer *o);
+/* 带兵上限（含官位加成，定稿 J3/J8）：等级×40 + 官位 Soldiers。
+ * ⚠ 原版口径 = **仅官位 Soldiers**（截图 呂布驃騎將軍 → 400）；我们按定稿加等级项，待用户拍板。 */
+int  s3_officer_troop_limit_ex(const S3Officer *o, int rank_soldiers);
 
 /* ---------------------------------------------- P1（2026-09-22，定稿 O 区/P 区）
  * 忠诚度：0~100，初值 = 义理（add_ex 内自动设置）。add_loyalty 会把结果钳在 0~100。 */
