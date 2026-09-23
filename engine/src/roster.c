@@ -302,7 +302,7 @@ int s3_officer_troop_limit_ex(const S3Officer *o, int rank_soldiers) {
 
 /* ---------------------------------------------------------------- 官位自动授勋
  * 用户 2026-09-23 裁决："官位可以按照等级自动授勋"（原版是君主任命）。
- * 规则见 roster.h。档内分散用**确定性下标取模**，不开随机数（便于回归/复现）。 */
+ * 规则见 roster.h：取最高可达档，**同档统一取档内第一个**（用户第二轮："同档统一给同一个名"）。 */
 int s3_roster_auto_titles(S3Roster *r, const S3TitleRow *rows, int n_rows) {
     if (!r || !rows || n_rows <= 0) return 0;
     int changed = 0;
@@ -318,20 +318,19 @@ int s3_roster_auto_titles(S3Roster *r, const S3TitleRow *rows, int n_rows) {
             }
             continue;
         }
-        /* 取 level <= 武将等级 的最高一档；同档并列多个 → 按下标取模分散 */
-        int best_lv = -1, first = -1, cnt = 0;
+        /* 取 level <= 武将等级 的最高一档；同档并列多个 → **统一取档内第一个**
+         * （用户 2026-09-23 裁决："同档统一给同一个名吧"，故不再按下标分散）。 */
+        int best_lv = -1, first = -1;
         for (int k = 0; k < n_rows; ++k) {
             if (rows[k].level > o->level) continue;
-            if (rows[k].level > best_lv) { best_lv = rows[k].level; first = k; cnt = 1; }
-            else if (rows[k].level == best_lv) { ++cnt; }
+            if (rows[k].level > best_lv) { best_lv = rows[k].level; first = k; }
         }
         if (first < 0) continue;                    /* 等级低于最低官位门槛（Lv1 校尉）→ 无官位 */
-        const int pick = first + (i % (cnt > 0 ? cnt : 1));
-        const S3TitleRow *tr = &rows[pick];
-        if (o->rank_no == pick && o->rank_soldiers == tr->soldiers &&
+        const S3TitleRow *tr = &rows[first];
+        if (o->rank_no == first && o->rank_soldiers == tr->soldiers &&
             strcmp(o->rank_name, tr->name) == 0)
             continue;                               /* 官位未变 */
-        o->rank_no = pick;
+        o->rank_no = first;
         snprintf(o->rank_name, sizeof o->rank_name, "%.31s", tr->name);
         o->rank_soldiers = tr->soldiers;
         ++changed;
@@ -405,4 +404,29 @@ int s3_personality_similarity(int a, int b) {
     if (d <= 49)  return 65;
     if (d <= 99)  return 40;
     return 15;
+}
+
+/* ================================================== 装备加成 / 有效属性（2026-09-23）
+ * 用户要求（原版行为）：技的**武/智区间门槛用"有效属性"判定** ——
+ *   "48+ 武力才可学的技，武力不到就不显示；装备上武器达标后才显示"。
+ * 数据来源：`Thing.ini` 的 `Increment`
+ *   · 武器 Type=2 → 武力（如 吳鉤 +1 … 方天畫戟 +12）
+ *   · 书   Type=3 → 智力（如 春秋左傳 +3 … 幻世錄 +20）
+ * 装备变更系统未做（首版装备 = General01 的 Weapon/Book），故加成在开局算一次。 */
+void s3_officer_set_equip_bonus(S3Officer *o, int str_bonus, int intel_bonus) {
+    if (!o) return;
+    o->equip_str = (str_bonus   > 0) ? str_bonus   : 0;
+    o->equip_int = (intel_bonus > 0) ? intel_bonus : 0;
+}
+
+int s3_officer_eff_str(const S3Officer *o) {
+    if (!o) return 0;
+    int v = o->str + o->equip_str;
+    return (v > 0) ? v : 0;
+}
+
+int s3_officer_eff_intel(const S3Officer *o) {
+    if (!o) return 0;
+    int v = o->intel + o->equip_int;
+    return (v > 0) ? v : 0;
 }

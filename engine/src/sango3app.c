@@ -176,6 +176,63 @@ static S3AppTitle g_titles[96];  static int g_n_titles = 0;
 static char        g_form[8][32]; static int g_n_form = 0;      /* 阵形名 */
 static char        g_soldier[20][32], g_soldier_adv[20][32]; static int g_n_soldier = 0;
 
+/* 装备属性加成表（`Thing.ini`，2026-09-23）
+ * 只收"会加属性"的两类：**武器 Type=2 → 武力**、**书 Type=3 → 智力**
+ * （`Increment` 字段；Type=6 宝物的 Increment 是忠诚增量、Type=4 马是别的，均不计入学技门槛）。
+ * 用途：学技的武/智区间门槛按**有效属性 = 基础 + 装备**判定（用户要求，原版行为）。 */
+typedef struct { char name[32]; int kind; int inc; } S3AppEquip;   /* kind: 1=武力 2=智力 */
+static S3AppEquip g_equip[128]; static int g_n_equip = 0;
+
+static void load_equip_table_pak(PakCtx *c) {
+    uint32_t len = 0; uint8_t *d = pak_get(c, "Setting\\Thing.ini", &len);
+    if (!d) return;
+    S3Ini *ini = s3_ini_parse_inc(d, len, include_cb, c); free(d);
+    if (!ini) return;
+    int n = 0;
+    for (int i = 0; i < ini->n_sections && n < 128; ++i) {
+        const S3IniSection *s = &ini->sections[i];
+        if (!s->name || strcmp(s->name, "ITEM") != 0) continue;
+        const char *nm = s3_ini_str(s, "Name", "");
+        if (!nm || !*nm) continue;
+        const int ty = s3_ini_int(s, "Type", 0);
+        const int kind = (ty == 2) ? 1 : (ty == 3) ? 2 : 0;
+        if (!kind) continue;
+        const int inc = s3_ini_int(s, "Increment", 0);
+        if (inc <= 0) continue;
+        snprintf(g_equip[n].name, sizeof g_equip[n].name, "%.31s", nm);
+        g_equip[n].kind = kind; g_equip[n].inc = inc;
+        ++n;
+    }
+    s3_ini_free(ini);
+    g_n_equip = n;
+}
+
+static int equip_bonus_of(const char *item_name, int kind) {
+    if (!item_name || !*item_name) return 0;
+    for (int i = 0; i < g_n_equip; ++i)
+        if (g_equip[i].kind == kind && strcmp(g_equip[i].name, item_name) == 0)
+            return g_equip[i].inc;
+    return 0;
+}
+
+/* 给全名册算一次装备加成（开局装备来自 General01 的 Weapon/Book/Horse） */
+static int apply_equip_bonus(S3Roster *r) {
+    if (!r) return 0;
+    int n = 0;
+    for (int i = 0; i < s3_roster_count(r); ++i) {
+        S3Officer *o = s3_roster_mut(r, i);
+        if (!o) continue;
+        const int sb = equip_bonus_of(o->weapon, 1);
+        const int ib = equip_bonus_of(o->book,   2);
+        if (sb || ib) { s3_officer_set_equip_bonus(o, sb, ib); ++n; }
+    }
+    if (n > 0) {
+        printf("equip bonus: %d officers\n", n);
+        ALOG("equip bonus: %d officers", n);
+    }
+    return n;
+}
+
 static void load_titles_pak(PakCtx *c) {
     uint32_t len = 0; uint8_t *d = pak_get(c, "Setting\\GenTitle.ini", &len);
     if (!d) return;
@@ -230,8 +287,11 @@ static void load_aux_tables_from_pak(PakCtx *c) {
     load_titles_pak(c);
     load_forms_pak(c);
     load_soldiers_pak(c);
-    printf("aux tables: titles=%d forms=%d soldiers=%d\n", g_n_titles, g_n_form, g_n_soldier);
-    ALOG("aux tables: titles=%d forms=%d soldiers=%d\n", g_n_titles, g_n_form, g_n_soldier);
+    load_equip_table_pak(c);
+    printf("aux tables: titles=%d forms=%d soldiers=%d equip=%d\n",
+           g_n_titles, g_n_form, g_n_soldier, g_n_equip);
+    ALOG("aux tables: titles=%d forms=%d soldiers=%d equip=%d",
+         g_n_titles, g_n_form, g_n_soldier, g_n_equip);
 }
 
 /* 官位自动授勋（用户 2026-09-23 裁决："官位可以按照等级自动授勋"）。
@@ -796,6 +856,8 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
         }
         /* 官位按等级自动授勋（必须**在 mark_city 之后**：只有我方武将才授勋） */
         apply_titles(roster);
+        /* 装备加成（武器→武力 / 书→智力）—— 学技门槛用"有效属性"判定 */
+        apply_equip_bonus(roster);
     }
     printf("strategy: %d cities (%d mine)\n", n, n_mine);
     ALOG("strategy: %d cities (%d mine)", n, n_mine);
@@ -1785,6 +1847,7 @@ int main(int argc, char **argv) {
                  * 长按、点名单面板外关闭、任何别的关闭路径都走同一段恢复逻辑
                  * —— 避免"关掉了但朝堂菜单还藏着"（2026-09-23 自查发现）。 */
                 if (pt.rclick) {                        /* 长按/返回：逐层退（2026-09-23） */
+                    ou_down = 0;                        /* 长按抬起不再算点击 */
                     const int still = s3_oui_on_rclick(g_oui);
                     if (!still) {                       /* 已关闭（名单/信息块）→ 回朝堂 */
                         s3_admin_set_visible(g_adm, 1);
@@ -1796,7 +1859,10 @@ int main(int argc, char **argv) {
                     }
                 } else {
                     if (pt.lclick) { ou_down = 1; ou_x = (int32_t)pt.lx; ou_y = (int32_t)pt.ly; }
-                    if (!pt.ldown && ou_down) {
+                    /* `!pt.longpress`：长按（=右键）抬起时不得再算一次点击 ——
+                     * 否则"整备页长按 → 回到名单"的那次抬起会在名单上再点一下
+                     * （压点落在名单面板外 → 名单关闭 → 看着像"瞬间又退回朝堂"）。 */
+                    if (!pt.ldown && ou_down && !pt.longpress) {
                         ou_down = 0;
                         const int r = s3_oui_on_click(g_oui, ou_x, ou_y);
                         if (r == 0 && s3_oui_mode(g_oui) == S3_OUI_ARRAY) {
@@ -1837,13 +1903,14 @@ int main(int argc, char **argv) {
                 s3_picker_on_move(g_picker, pt.inside ? (int32_t)pt.lx : -1,
                                             pt.inside ? (int32_t)pt.ly : -1);
                 if (pt.rclick) {                        /* 长按/返回 = 取消本次命令 */
+                    pk_down = 0;                        /* 长按抬起不再算点击 */
                     s3_picker_close(g_picker);
                     admin_cancel_pending();
                     mode = 5;
                 } else {
                     int off = -1, cancel = 0;
                     if (pt.lclick) { pk_down = 1; pk_x = (int32_t)pt.lx; pk_y = (int32_t)pt.ly; }
-                    if (!pt.ldown && pk_down) {
+                    if (!pt.ldown && pk_down && !pt.longpress) {
                         pk_down = 0;
                         s3_picker_on_click(g_picker, pk_x, pk_y, &off, &cancel);
                         if (off >= 0) {
@@ -1910,7 +1977,7 @@ int main(int argc, char **argv) {
                 }
                 if (!pt.ldown && g_map_drag) {
                     g_map_drag = 0;
-                    if (!g_map_moved) {
+                    if (!g_map_moved && !pt.longpress) {    /* 长按（=右键）抬起不算点击 */
                         const int32_t spx = g_map_px, spy = g_map_py;
                         if (g_map_menu) s3_admin_on_click(g_adm, spx, spy);
                         else {
@@ -2024,7 +2091,7 @@ int main(int argc, char **argv) {
                  pt.lclick, pt.rclick, pt.lx, pt.ly, pt.inside);
         if (pt.lclick) app.press = hit;
         if (!pt.ldown && app.press) {
-            if (app.press == hit) {
+            if (app.press == hit && !pt.longpress) {   /* 长按（=右键）抬起不算点击 */
                 const S3UiWindow *w = s3_ui_window(&L, app.press);
                 int32_t cmd = w ? w->command : -1;
                 /* 场景上下文：同一命令号在不同场景含义不同

@@ -31,6 +31,7 @@ struct Sango3Presenter {
     uint32_t      lp_ticks;          /* 按下时刻 */
     float         lp_x, lp_y;        /* 按下位置（逻辑坐标） */
     int           lp_active, lp_fired;
+    int           lp_consumed;       /* 本次按压已升级长按 → 抬起不算点击（2026-09-23） */
     /* 文本输入 / 按键队列（供表单类界面轮询；frame() 收集，poll 取走） */
     char          text_q[8][32];
     int           text_n;
@@ -272,7 +273,8 @@ int sango3_presenter_frame(Sango3Presenter *p, uint32_t *out_drawn) {
             update_pointer(p, e.motion.x, e.motion.y);
         }
         else if (e.type == SDL_MOUSEBUTTONDOWN) {
-            if (e.button.button == SDL_BUTTON_LEFT)  { p->ptr_ldown = 1; p->ptr_lclick = 1; }
+            if (e.button.button == SDL_BUTTON_LEFT)  { p->ptr_ldown = 1; p->ptr_lclick = 1;
+                                                       p->lp_consumed = 0; }
             if (e.button.button == SDL_BUTTON_RIGHT) { p->ptr_rdown = 1; p->ptr_rclick = 1; }
             update_pointer(p, e.button.x, e.button.y);
         }
@@ -298,6 +300,7 @@ int sango3_presenter_frame(Sango3Presenter *p, uint32_t *out_drawn) {
             if (!p->lp_fired && !moved && now - p->lp_ticks > 600) {
                 p->ptr_rclick = 1;
                 p->lp_fired = 1;
+                p->lp_consumed = 1;     /* 标记：本次按压已成"长按"，抬起不再算点击 */
             }
         }
     } else {
@@ -408,4 +411,5 @@ void sango3_presenter_pointer(const Sango3Presenter *p, S3Pointer *out) {
     out->rdown  = p->ptr_rdown;
     out->lclick = p->ptr_lclick;
     out->rclick = p->ptr_rclick;
+    out->longpress = p->lp_consumed;
 }

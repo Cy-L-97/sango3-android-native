@@ -80,6 +80,12 @@ typedef struct {
     int   rdown;    /* 右键当前按下 */
     int   lclick;   /* 本帧发生左键按下 */
     int   rclick;   /* 本帧发生右键按下 */
+    /* ⚠ **本次按压已升级为长按**（保持到下次按下）：抬起时**不得**再算一次鼠标点击。
+     * 由来（2026-09-23 用户实机反馈）：长按会先产生一次 `lclick` 边沿，随后 600ms 到点产生
+     * `rclick`；界面若在 rclick 里"退一层/关掉"，抬起那一帧的 `!ldown` 又会被误判为一次点击
+     * → 在**新出现的界面/底层场景**上再点一次（表现为"返回上一层瞬间又被返回一次"）。
+     * 所有 `!pt.ldown && pressed` 式点击判定都必须加 `&& !pt.longpress`。 */
+    int   longpress;
 } S3Pointer;
 
 void sango3_presenter_pointer(const Sango3Presenter *p, S3Pointer *out);

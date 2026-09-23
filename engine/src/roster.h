@@ -86,6 +86,10 @@ typedef struct {
     char weapon[S3_OFFICER_NAME_CAP];   /* 装备槽：武器（General01 的 Weapon） */
     char book[S3_OFFICER_NAME_CAP];     /* 装备槽：书 */
     char horse[S3_OFFICER_NAME_CAP];    /* 装备槽：马 */
+    /* 装备提供的属性加成（2026-09-23）：**学技判定用"有效属性" = 基础 + 装备**
+     * —— 用户实机要求："48+ 武力才可学的技，武力不到就不显示，装备武器达标后才显示"。
+     * 来源：`Thing.ini` 的 `Increment`（武器 Type=2 → 武力；书 Type=3 → 智力）。 */
+    int  equip_str, equip_int;
     int  super_attack[S3_MAX_SA_SLOT];  int n_super_attack;   /* 开局预设必杀技（General01 SuperAttack） */
     int  soldier_type[S3_MAX_SQUAD];    int n_soldier_type;   /* 8 个小队的兵种号（0~8） */
 } S3Officer;
@@ -121,8 +125,8 @@ void s3_roster_mark_city(S3Roster *r, const char *city, int mine);
 /* ---- 官位自动授勋（用户 2026-09-23 裁决；定稿 J8 的"官职加成"来源） ----
  * 规则：① 只有**我方非在野**武将授勋（他方/在野 → 无官位，加成 0）；
  *       ② 取 `rows` 中 `level <= 武将等级` 的**最高一档**（定稿 M 区：等级上限 50，
- *          故 40 级后恒为最高档 大將軍一类）；
- *       ③ 同档并列 4 个时按 `roster 下标 % 档内条数` 分散，避免全势力同名（确定性、不随机）。
+ *          故 40 级后恒为最高档）；③ **同档并列 4 个时统一取档内第一个**
+ *          （用户 2026-09-23 第二轮裁决"同档统一给同一个名"）。
  * 返回官位发生变化的人数。**开局建名册后、以及每次等级变化后（月度成长）都要调用。** */
 int  s3_roster_auto_titles(S3Roster *r, const S3TitleRow *rows, int n_rows);
 
@@ -188,6 +192,13 @@ int  s3_officer_knows_sf(const S3Officer *o, int no);
  * |差| ≤10 → 100 · ≤24 → 85 · ≤49 → 65 · ≤99 → 40 · ≥100 → 15（0~100）。
  * 用于搜索招揽 / 招降 / 离间 / 同盟成功率。 */
 int  s3_personality_similarity(int a, int b);
+
+/* ---- 装备加成与"有效属性"（2026-09-23）----
+ * 有效属性 = 基础（General01 的 Strength/Intelligence）+ 装备加成。
+ * **可学技判定一律用有效属性**（用户要求：装备达标后才把该技显示出来）。 */
+void s3_officer_set_equip_bonus(S3Officer *o, int str_bonus, int intel_bonus);
+int  s3_officer_eff_str(const S3Officer *o);
+int  s3_officer_eff_intel(const S3Officer *o);
 
 #ifdef __cplusplus
 }

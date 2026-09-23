@@ -141,9 +141,11 @@
 
 #define TAB_COUNT 5
 
-/* 技的四种状态（武將技/軍師技 页签） */
-enum { ST_KNOWN = 0, ST_OK = 1, ST_POOR = 2, ST_LOCK = 3 };
-/* 筛选：0 全部 · 1 已學 · 2 可學（含功勋不足，都是"符合条件、能学"的） */
+/* 技的三种状态（武將技/軍師技 页签）——
+ * ⚠ **不列"不符合武/智区间"的技**（用户 2026-09-23 明确：原版行为 = 门槛不到的技根本不显示，
+ *   只有装备武器/书把**有效属性**顶上去之后才出现在列表里）。 */
+enum { ST_KNOWN = 0, ST_OK = 1, ST_POOR = 2 };
+/* 筛选：0 全部（可学+已学）· 1 已學 · 2 可學 */
 enum { FILT_ALL = 0, FILT_KNOWN = 1, FILT_OPEN = 2 };
 
 struct S3OfficerUI {
@@ -192,9 +194,11 @@ struct S3OfficerUI {
     const S3ArrayTables *T;
 };
 
+/* 訊息欄默认文案（实现在渲染段，供 array_enter 提前调用） */
+static void default_msg(S3OfficerUI *u, const S3Officer *o);
+
 S3OfficerUI *s3_oui_new(S3OuiDrawText draw_text, void *text_ud,
-                        S3OuiReadAsset read_asset, void *asset_ud) {
-    S3OfficerUI *u = (S3OfficerUI *)calloc(1, sizeof *u);
+                        S3OuiReadAsset read_asset, void *asset_ud) {    S3OfficerUI *u = (S3OfficerUI *)calloc(1, sizeof *u);
     if (!u) return NULL;
     u->draw_text = draw_text; u->text_ud = text_ud;
     u->read_asset = read_asset; u->asset_ud = asset_ud;
@@ -251,13 +255,19 @@ static void build_card(S3OfficerUI *u, const S3Officer *o) {
     const int need = s3_officer_exp_need(o->level);
     const char *ld = u->lord[0] ? u->lord : "—";
     const char *rk = o->rank_name[0] ? o->rank_name : "—";
+    /* 武力/智力显示**有效值**（基础+装备）—— 学技门槛按它判，故必须一致；
+     * 有装备加成时以 `(+N)` 标出来源（用户 2026-09-23 要求"装备达标后才显示"）。 */
+    const int eff_s = s3_officer_eff_str(o), eff_i = s3_officer_eff_intel(o);
+    char bs[16] = "", bi[16] = "";
+    if (o->equip_str > 0) snprintf(bs, sizeof bs, "(+%d)", o->equip_str);
+    if (o->equip_int > 0) snprintf(bi, sizeof bi, "(+%d)", o->equip_int);
     /* 原版 9045 五行；姓名行按原版截图再加「官位」 */
     snprintf(u->line[0], sizeof u->line[0], "%s  %s      戰績 %d勝%d敗",
              o->name, rk, o->wins, o->losses);
-    snprintf(u->line[1], sizeof u->line[1], "君主 %-8s 武力 %-4d 體力 %d/%d",
-             ld, o->str, o->hp, o->hp_max);
-    snprintf(u->line[2], sizeof u->line[2], "等級 %-8d 智力 %-4d 技力 %d/%d",
-             o->level, o->intel, o->mp, o->mp_max);
+    snprintf(u->line[1], sizeof u->line[1], "君主 %-8s 武力 %d%s 體力 %d/%d",
+             ld, eff_s, bs, o->hp, o->hp_max);
+    snprintf(u->line[2], sizeof u->line[2], "等級 %-8d 智力 %d%s 技力 %d/%d",
+             o->level, eff_i, bi, o->mp, o->mp_max);
     snprintf(u->line[3], sizeof u->line[3], "忠誠 %-8d 士氣 %-4d 帶兵數 %d/%d",
              o->loyalty, 70, o->troops, cap);
     snprintf(u->line[4], sizeof u->line[4], "功勳 %-8d 經驗值 %d/%d",
@@ -276,23 +286,23 @@ static void build_sa_names(S3OfficerUI *u, const S3Officer *o) {
     }
 }
 
-/* 技的状态（武將技/軍師技 通用） */
+/* 技的状态（武將技/軍師技 通用）
+ * 用**有效属性**（基础 + 装备）判区间 —— 装备武器/书达标后该技才会出现（用户要求）。 */
 static int status_of(const S3Officer *o, const S3Magic *m, int is_sf) {
     const int known = is_sf ? s3_officer_knows_sf(o, m->no) : s3_officer_knows_bf(o, m->no);
     if (known) return ST_KNOWN;                                  /* 定稿 P2：学会即永久保留 */
-    if (!s3_magic_learnable(m, o->str, o->intel, o->level)) return ST_LOCK;
+    const int eff_s = s3_officer_eff_str(o), eff_i = s3_officer_eff_intel(o);
+    if (!s3_magic_learnable(m, eff_s, eff_i, o->level)) return -1;   /* 区间未达 → 不列 */
     return (o->merit >= m->contribution) ? ST_OK : ST_POOR;
 }
 static int st_prio(int st) {
-    return (st == ST_OK) ? 0 : (st == ST_POOR) ? 1 : (st == ST_KNOWN) ? 2 : 3;
+    return (st == ST_OK) ? 0 : (st == ST_POOR) ? 1 : 2;
 }
 static const char *st_label(int st) {
-    return (st == ST_KNOWN) ? "已學" : (st == ST_OK) ? "可學"
-                           : (st == ST_POOR) ? "功勳不足" : "未達";
+    return (st == ST_KNOWN) ? "已學" : (st == ST_OK) ? "可學" : "功勳不足";
 }
 static uint32_t st_color(int st) {
-    return (st == ST_KNOWN) ? C_KNOWN : (st == ST_OK) ? C_OK
-                            : (st == ST_POOR) ? C_NO : C_DIM;
+    return (st == ST_KNOWN) ? C_KNOWN : (st == ST_OK) ? C_OK : C_NO;
 }
 
 /* 重建"该页签的列表"（武將技/軍師技 = 全表 + 状态 + 筛选 + 排序） */
@@ -308,12 +318,14 @@ static void rebuild_list(S3OfficerUI *u) {
     const int n = is_sf ? u->T->n_sf : u->T->n_bf;
     if (!arr || n <= 0) return;
 
-    /* 1) 全表 + 状态 */
+    /* 1) 全表筛出"够条件"的（区间未达的直接不列，见 status_of） */
     static const S3Magic *tmp[256]; static int tst[256];
     int nt = 0;
     for (int i = 0; i < n && nt < 256; ++i) {
+        const int st = status_of(o, &arr[i], is_sf);
+        if (st < 0) continue;                        /* 武/智区间未达 → 不显示（原版行为） */
         tmp[nt] = &arr[i];
-        tst[nt] = status_of(o, &arr[i], is_sf);
+        tst[nt] = st;
         ++nt;
     }
     u->count_all = nt;
@@ -322,7 +334,7 @@ static void rebuild_list(S3OfficerUI *u) {
         if (tst[i] == ST_OK || tst[i] == ST_POOR) ++u->count_open;
     }
 
-    /* 2) 排序：可學 → 功勳不足 → 已學 → 未達；组内按 等级、No（插入排序，稳定可复现） */
+    /* 2) 排序：可學 → 功勳不足 → 已學；组内按 等级、No（插入排序，稳定可复现） */
     for (int i = 1; i < nt; ++i) {
         const S3Magic *km = tmp[i]; const int ks = tst[i];
         int j = i - 1;
@@ -358,7 +370,7 @@ static void array_enter(S3OfficerUI *u, int off_idx) {
     rebuild_list(u);
     load_face(u);
     build_card(u, o);
-    if (o) snprintf(u->msg, sizeof u->msg, "%s（←→ 換武將 · 長按回名單）", o->name);
+    default_msg(u, o);
 }
 
 /* ---- 武将名单（PICK） ---- */
@@ -440,6 +452,17 @@ static void txt3(S3OfficerUI *u, Sango3Canvas *cv, const char *s, int x, int y,
     txt(u, cv, s, x, y, w, h, ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b, centered);
 }
 
+/* 訊息欄默认文案：把**现有功勋**与"怎么学"讲清楚（用户 2026-09-23："学习需要多少功勋没显示"） */
+static void default_msg(S3OfficerUI *u, const S3Officer *o) {
+    if (!u || !o) return;
+    if (u->tab == 3 || u->tab == 4) {
+        snprintf(u->msg, sizeof u->msg,
+                 "功勳 %d · 點「可學」項即學（綠=可學 / 紅=功勳不足 / 藍=已學）", o->merit);
+    } else {
+        snprintf(u->msg, sizeof u->msg, "%s（←→ 換武將 · 長按回名單）", o->name);
+    }
+}
+
 static const char *tab_label(int t) {
     static const char *N[TAB_COUNT] = { "陣形", "兵種", "必殺技", "武將技", "軍師技" };
     return (t >= 0 && t < TAB_COUNT) ? N[t] : "?";
@@ -491,9 +514,8 @@ static void render_pick(S3OfficerUI *u, Sango3Canvas *cv) {
         snprintf(b, sizeof b, "%d", o->level);
         txt(u, cv, b, PK_X + 204, ry, 46, PK_ROW - 2, C_TEXT, 0);
         txt(u, cv, o->city[0] ? o->city : "—", PK_X + 252, ry, 90, PK_ROW - 2, C_DIM, 0);
-        snprintf(b, sizeof b, "%d + %d", o->n_learn_bf, o->n_learn_sf);
-        txt(u, cv, b, PK_X + 344, ry, 60, PK_ROW - 2, C_KNOWN, 0);
-        txt(u, cv, "武 · 軍", PK_X + 404, ry, 56, PK_ROW - 2, C_DIM, 0);
+        snprintf(b, sizeof b, "武 %d · 軍 %d", o->n_learn_bf, o->n_learn_sf);
+        txt(u, cv, b, PK_X + 344, ry, 126, PK_ROW - 2, C_KNOWN, 0);
     }
     if (u->n_pick == 0)
         txt(u, cv, "（我方尚無武將）", PK_X + 12, PK_ROWS_Y, PK_W - 24, PK_ROW, C_NO, 0);
@@ -568,14 +590,21 @@ void s3_oui_render(S3OfficerUI *u, Sango3Canvas *cv) {
     {
         const char *names[3] = { o->weapon, o->book, o->horse };
         const char *labels[3] = { "武器", "書", "馬" };
+        const int bonus[3] = { o->equip_str, o->equip_int, 0 };   /* 马暂不加武/智 */
         const int ys[3] = { SLOT_Y0, SLOT_Y1, SLOT_Y2 };
         const int ny[3] = { NOTE_Y0, NOTE_Y1, NOTE_Y2 };
         for (int i = 0; i < 3; ++i) {
             rect(cv, SLOT_X, ys[i], SLOT_W, SLOT_H, C_SLOT);
             frame(cv, SLOT_X, ys[i], SLOT_W, SLOT_H);
             txt(u, cv, labels[i], SLOT_X, ys[i] + SLOT_H / 2 - 10, SLOT_W, 20, C_DIM, 1);
-            txt(u, cv, (names[i][0] ? names[i] : "—"), SLOT_X - 8, ny[i], SLOT_W + 16, NOTE_H,
+            txt(u, cv, (names[i][0] ? names[i] : "—"), SLOT_X - 8, ny[i], SLOT_W + 16, 16,
                 names[i][0] ? C_OK : C_DIM, 1);
+            /* 装备的属性加成（学技门槛用有效属性，故在此标出来源） */
+            if (bonus[i] > 0) {
+                char bb[16];
+                snprintf(bb, sizeof bb, "%s +%d", (i == 0) ? "武" : "智", bonus[i]);
+                txt(u, cv, bb, SLOT_X - 8, ny[i] + 15, SLOT_W + 16, 15, C_KNOWN, 1);
+            }
         }
     }
 
@@ -623,9 +652,8 @@ void s3_oui_render(S3OfficerUI *u, Sango3Canvas *cv) {
                     on ? C_TITLE : C_DIM, 1);
             }
             char b[64];
-            snprintf(b, sizeof b, "%s 共%d · 已學%d · 可學%d",
-                     is_sf ? "軍師技" : "武將技",
-                     u->count_all, u->count_known, u->count_open);
+            snprintf(b, sizeof b, "%s 可學%d · 已學%d",
+                     is_sf ? "軍師技" : "武將技", u->count_open, u->count_known);
             txt(u, cv, b, BIG_CNT_X, BIG_FILT_Y, BIG_X + BIG_W - 6 - BIG_CNT_X,
                 BIG_FILT_H - 2, C_KNOWN, 0);
         }
@@ -633,8 +661,8 @@ void s3_oui_render(S3OfficerUI *u, Sango3Canvas *cv) {
         /* 列头 */
         txt(u, cv, "名稱", BIG_X + 8,   BIG_HDR_Y, 116, BIG_HDR_H, C_TITLE, 0);
         txt(u, cv, "等級", BIG_X + 128, BIG_HDR_Y, 36,  BIG_HDR_H, C_TITLE, 0);
-        txt(u, cv, "MP",   BIG_X + 168, BIG_HDR_Y, 36,  BIG_HDR_H, C_TITLE, 0);
-        txt(u, cv, "所需功勳", BIG_X + 206, BIG_HDR_Y, 70, BIG_HDR_H, C_TITLE, 0);
+        txt(u, cv, "技力", BIG_X + 168, BIG_HDR_Y, 36,  BIG_HDR_H, C_TITLE, 0);
+        txt(u, cv, "需功勳", BIG_X + 206, BIG_HDR_Y, 70, BIG_HDR_H, C_TITLE, 0);
         txt(u, cv, "狀態", BIG_X + 280, BIG_HDR_Y, 78, BIG_HDR_H, C_TITLE, 0);
 
         const int pages = big_pages(u);
@@ -663,10 +691,11 @@ void s3_oui_render(S3OfficerUI *u, Sango3Canvas *cv) {
         }
         if (u->n_list == 0)
             txt(u, cv, u->filt == FILT_KNOWN ? "（尚無已學之技）"
-                                            : "（目前無可學之技）",
+                                            : "（目前無可學之技 —— 武力/智力/等級未達門檻，"
+                                              "裝上武器或書再來看）",
                 BIG_X + 8, BIG_ROWS_Y, BIG_W - 16, BIG_ROW, C_DIM, 0);
 
-        /* 翻页 */
+        /* 翻页 + 悬停项的**所需功勋**（用户 2026-09-23："学习需要多少功勋没显示"） */
         rect(cv, BIG_X + 8, BIG_PAGE_Y, 56, BIG_PAGE_H,
              u->hover == 100 ? C_HOVER : C_BTN);
         txt(u, cv, "上頁", BIG_X + 8, BIG_PAGE_Y, 56, BIG_PAGE_H, C_TEXT, 1);
@@ -674,10 +703,19 @@ void s3_oui_render(S3OfficerUI *u, Sango3Canvas *cv) {
              u->hover == 101 ? C_HOVER : C_BTN);
         txt(u, cv, "下頁", BIG_X + 68, BIG_PAGE_Y, 56, BIG_PAGE_H, C_TEXT, 1);
         {
-            char b[64];
-            snprintf(b, sizeof b, "第 %d / %d 頁 · 點行為學習/查看",
-                     u->page + 1, pages > 0 ? pages : 1);
-            txt(u, cv, b, BIG_X + 130, BIG_PAGE_Y, 230, BIG_PAGE_H, C_DIM, 0);
+            char b[96];
+            const int hi = u->page * BIG_ROWS + u->hover;      /* 悬停行（-1 = 无） */
+            if (u->hover >= 0 && u->hover < BIG_ROWS && hi < u->n_list) {
+                const S3Magic *hm = u->list[hi];
+                snprintf(b, sizeof b, "「%s」需功勳 %d · 現有 %d",
+                         hm->name, hm->contribution, o->merit);
+                txt(u, cv, b, BIG_X + 130, BIG_PAGE_Y, 236, BIG_PAGE_H,
+                    st_color(u->list_st[hi]), 0);
+            } else {
+                snprintf(b, sizeof b, "第 %d / %d 頁 · 點「可學」項即學",
+                         u->page + 1, pages > 0 ? pages : 1);
+                txt(u, cv, b, BIG_X + 130, BIG_PAGE_Y, 236, BIG_PAGE_H, C_DIM, 0);
+            }
         }
     }
 
@@ -758,21 +796,6 @@ void s3_oui_on_move(S3OfficerUI *u, int32_t x, int32_t y) {
     if (inbox(x, y, BIG_X + 68, BIG_PAGE_Y, 56, BIG_PAGE_H))  { u->hover = 101; return; }
 }
 
-/* 「未達」原因（等级 / 武力区间 / 智力区间，半开区间与 s3_magic_learnable 一致） */
-static void lock_reason(const S3Officer *o, const S3Magic *m, char *out, size_t cap) {
-    int p = 0;
-    out[0] = '\0';
-    p += snprintf(out + p, cap - (size_t)p, "未達：");
-    if (m->level > o->level) p += snprintf(out + p, cap - (size_t)p, "需等級 %d ", m->level);
-    if (m->str_up > m->str_down && !(m->str_down <= o->str && o->str < m->str_up))
-        p += snprintf(out + p, cap - (size_t)p, "需武力 %d~%d ", m->str_down, m->str_up - 1);
-    if (m->int_up > m->int_down && !(m->int_down <= o->intel && o->intel < m->int_up))
-        p += snprintf(out + p, cap - (size_t)p, "需智力 %d~%d ", m->int_down, m->int_up - 1);
-    if (p > 0 && out[p - 1] == ' ') out[p - 1] = '\0';
-    snprintf(out + p, cap - (size_t)p, "（現：等級 %d 武力 %d 智力 %d）",
-             o->level, o->str, o->intel);
-}
-
 int s3_oui_on_rclick(S3OfficerUI *u) {
     if (!u || u->mode == S3_OUI_NONE) return 0;
     if (u->mode == S3_OUI_ARRAY) {          /* 整备页 → 回名单（仍激活） */
@@ -806,7 +829,12 @@ int s3_oui_on_click(S3OfficerUI *u, int32_t x, int32_t y) {
                 return 0;
             }
         }
-        if (!inbox(x, y, PK_X, PK_Y, PK_W, PK_H)) { s3_oui_close(u); return -2; }
+        if (!inbox(x, y, PK_X, PK_Y, PK_W, PK_H)) {
+            /* 面板外点击：**只吞掉、不关闭** —— 长按/右键才是退出口。
+             * （2026-09-23 起如此：原先"点面板外=关闭"，配合长按抬起的幽灵点击会
+             *   让"整备页长按回名单"这一步又被立刻关掉、直接退回朝堂。） */
+            return -3;
+        }
         return -3;                                  /* 面板内空白：吞掉 */
     }
 
@@ -866,8 +894,9 @@ int s3_oui_on_click(S3OfficerUI *u, int32_t x, int32_t y) {
             u->tab = t;
             rebuild_list(u);
             if (t >= 3)
-                snprintf(u->msg, sizeof u->msg, "%s：共 %d · 已學 %d · 可學 %d（功勳 %d）",
-                         tab_label(t), u->count_all, u->count_known, u->count_open, o->merit);
+                snprintf(u->msg, sizeof u->msg,
+                         "%s：可學 %d · 已學 %d（功勳 %d）· 區間未達的技不列出",
+                         tab_label(t), u->count_open, u->count_known, o->merit);
             else
                 snprintf(u->msg, sizeof u->msg, "%s：%d 項（變更待接）",
                          tab_label(t), sub_count(u, o));
@@ -898,7 +927,8 @@ int s3_oui_on_click(S3OfficerUI *u, int32_t x, int32_t y) {
                     u->filt = f;
                     rebuild_list(u);
                     snprintf(u->msg, sizeof u->msg, "篩選：%s（%d 項）",
-                             f == FILT_ALL ? "全部" : f == FILT_KNOWN ? "已學" : "可學",
+                             f == FILT_ALL ? "全部（可學+已學）"
+                                           : f == FILT_KNOWN ? "已學" : "可學",
                              u->n_list);
                     return -3;
                 }
@@ -924,21 +954,18 @@ int s3_oui_on_click(S3OfficerUI *u, int32_t x, int32_t y) {
             switch (st) {
             case ST_OK:
                 u->sel = i; u->confirm = 1;
-                snprintf(u->msg, sizeof u->msg, "學習%s？所需功勳：%d", m->name, m->contribution);
+                snprintf(u->msg, sizeof u->msg, "學習「%s」？所需功勳 %d（現有 %d）",
+                         m->name, m->contribution, o->merit);
                 break;
             case ST_POOR:
                 u->sel = -1;
-                snprintf(u->msg, sizeof u->msg, "功勳不足：%s 需 %d，目前 %d",
+                snprintf(u->msg, sizeof u->msg, "功勳不足：「%s」需 %d，現有 %d",
                          m->name, m->contribution, o->merit);
-                break;
-            case ST_KNOWN:
-                u->sel = -1;
-                snprintf(u->msg, sizeof u->msg, "已學會：%s（等級 %d · MP %d）",
-                         m->name, m->level, m->mp);
                 break;
             default:
                 u->sel = -1;
-                lock_reason(o, m, u->msg, sizeof u->msg);
+                snprintf(u->msg, sizeof u->msg, "已學會「%s」（等級 %d · 技力 %d）",
+                         m->name, m->level, m->mp);
                 break;
             }
             return -3;
