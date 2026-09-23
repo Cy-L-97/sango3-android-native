@@ -46,6 +46,15 @@ extern "C" {
 #define S3_MAX_SA_SLOT 8
 #define S3_MAX_SQUAD   8
 
+/* 官位表行（`GenTitle.ini`，69 条；app 解析后传入）。
+ * 用户 2026-09-23 裁决：**官位按等级自动授勋**（原版是君主任命，我们自动化）。
+ * 表本身是干净的阶梯：Lv1 校尉 40 兵 → 每级 +20 兵 → Lv40 大將軍 400 兵，每级 4 个并列。 */
+typedef struct {
+    int  level;                        /* 授勋门槛等级 */
+    int  soldiers;                     /* 该官位的带兵加成（定稿 J8：上限 = 等级×40 + 此值） */
+    char name[S3_OFFICER_NAME_CAP];
+} S3TitleRow;
+
 typedef struct {
     char name[S3_OFFICER_NAME_CAP];
     char city[S3_CITY_NAME_CAP];    /* 所在城池名（""=未定） */
@@ -69,8 +78,10 @@ typedef struct {
     int  learn_bf[S3_MAX_LEARN_BF]; int n_learn_bf;   /* 已学武将技编号（No） */
     int  learn_sf[S3_MAX_LEARN_SF]; int n_learn_sf;   /* 已学军师技编号（No） */
 
-    /* ---------------- 2026-09-23 整备界面（`ARRAY` root）所需 ---------------- */
-    int  rank_no;                   /* 官位号 = General01 的 Rank → GenTitle.ini 的 No（驃騎將軍…） */
+    /* ---------------- 2026-09-23 整备界面（`ARRAY` root）+ 官位所需 ---------------- */
+    int  rank_no;                   /* 官位在 `GenTitle.ini` 表里的序号（-1 = 未授勋/在野） */
+    char rank_name[S3_OFFICER_NAME_CAP];  /* 官位名（驃騎將軍…）：按等级自动授勋 */
+    int  rank_soldiers;             /* 该官位带来的带兵加成（GenTitle.Soldiers） */
     int  portrait;                  /* 肖像号 → Shape\Portrait\Portrait{号}.SHP */
     char weapon[S3_OFFICER_NAME_CAP];   /* 装备槽：武器（General01 的 Weapon） */
     char book[S3_OFFICER_NAME_CAP];     /* 装备槽：书 */
@@ -97,14 +108,23 @@ int  s3_roster_add_ex(S3Roster *r, const char *name, const char *city,
                       int str, int intel, int hp, int mp,
                       int justice, int personality, int wild);
 
-/* 补填"静态档案"（2026-09-23 整备界面用）：官位号 / 肖像号 / 三装备槽 /
- * 开局预设必杀技 / 8 个小队的兵种。add_ex 之后立刻调用（数据来自 General01）。 */
+/* 补填"静态档案"（2026-09-23 整备界面用）：肖像号 / 三装备槽 /
+ * 开局预设必杀技 / 8 个小队的兵种。add_ex 之后立刻调用（数据来自 General01）。
+ * rank_no 传 -1：官位不由数据决定，改由 `s3_roster_auto_titles()` 按等级授予。 */
 void s3_officer_set_profile(S3Officer *o, int rank_no, int portrait,
                             const char *weapon, const char *book, const char *horse,
                             const int *super_attack, int n_sa,
                             const int *soldier_type, int n_st);
 /* 按城名批量标记"是否我方"（城池表建好后调用一次） */
 void s3_roster_mark_city(S3Roster *r, const char *city, int mine);
+
+/* ---- 官位自动授勋（用户 2026-09-23 裁决；定稿 J8 的"官职加成"来源） ----
+ * 规则：① 只有**我方非在野**武将授勋（他方/在野 → 无官位，加成 0）；
+ *       ② 取 `rows` 中 `level <= 武将等级` 的**最高一档**（定稿 M 区：等级上限 50，
+ *          故 40 级后恒为最高档 大將軍一类）；
+ *       ③ 同档并列 4 个时按 `roster 下标 % 档内条数` 分散，避免全势力同名（确定性、不随机）。
+ * 返回官位发生变化的人数。**开局建名册后、以及每次等级变化后（月度成长）都要调用。** */
+int  s3_roster_auto_titles(S3Roster *r, const S3TitleRow *rows, int n_rows);
 
 int              s3_roster_count(const S3Roster *r);
 const S3Officer *s3_roster_at(const S3Roster *r, int i);
@@ -139,10 +159,12 @@ int  s3_roster_officers_in_city(const S3Roster *r, const char *city,
                                 int *out, int out_max);
 int  s3_roster_officer_count_in_city(const S3Roster *r, const char *city);
 
-/* 单将带兵上限（等级×40，等级上限 30） */
+/* 单将带兵上限（**定稿 J8，用户 2026-09-23 重申"按定稿来"**）：
+ *   = 等级×40（S3_TROOPS_PER_LEVEL）+ 官位加成（o->rank_soldiers，由自动授勋写入）
+ * ⚠ 原版口径 = **仅官位 Soldiers**（截图 呂布驃騎將軍 → 400）；这是**有意的差异**，
+ *   不再改（用户 2026-09-23 明确"带兵上限不要动，按照定稿来"）。 */
 int  s3_officer_troop_limit(const S3Officer *o);
-/* 带兵上限（含官位加成，定稿 J3/J8）：等级×40 + 官位 Soldiers。
- * ⚠ 原版口径 = **仅官位 Soldiers**（截图 呂布驃騎將軍 → 400）；我们按定稿加等级项，待用户拍板。 */
+/* 兼容旧调用（信息块浮层）：rank_soldiers > 0 时用传入值，否则用武将自身已授勋的加成。 */
 int  s3_officer_troop_limit_ex(const S3Officer *o, int rank_soldiers);
 
 /* ---------------------------------------------- P1（2026-09-22，定稿 O 区/P 区）

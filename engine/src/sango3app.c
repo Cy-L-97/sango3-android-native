@@ -231,7 +231,34 @@ static void load_aux_tables_from_pak(PakCtx *c) {
     load_forms_pak(c);
     load_soldiers_pak(c);
     printf("aux tables: titles=%d forms=%d soldiers=%d\n", g_n_titles, g_n_form, g_n_soldier);
-    ALOG("aux tables: titles=%d forms=%d soldiers=%d", g_n_titles, g_n_form, g_n_soldier);
+    ALOG("aux tables: titles=%d forms=%d soldiers=%d\n", g_n_titles, g_n_form, g_n_soldier);
+}
+
+/* 官位自动授勋（用户 2026-09-23 裁决："官位可以按照等级自动授勋"）。
+ * 把 `GenTitle.ini` 的 69 条转成 S3TitleRow 并交给 roster；**名册建好后、等级变化后都要调**。
+ * 规则见 `roster.h` 的 s3_roster_auto_titles()；档内并列 4 个按下标取模分散（确定性，无随机）。 */
+static int apply_titles(S3Roster *r) {
+    if (!r || g_n_titles <= 0) return 0;
+    static S3TitleRow rows[96];
+    int n = 0;
+    for (int i = 0; i < g_n_titles && n < 96; ++i) {
+        rows[n].level    = g_titles[i].level;
+        rows[n].soldiers = g_titles[i].soldiers;
+        snprintf(rows[n].name, sizeof rows[n].name, "%s", g_titles[i].name);
+        ++n;
+    }
+    for (int i = 1; i < n; ++i) {          /* 表本身按 Level 升序，兜底再排一次（稳定） */
+        S3TitleRow k = rows[i];
+        int j = i - 1;
+        while (j >= 0 && rows[j].level > k.level) { rows[j + 1] = rows[j]; --j; }
+        rows[j + 1] = k;
+    }
+    const int changed = s3_roster_auto_titles(r, rows, n);
+    if (changed > 0) {
+        printf("titles: %d officers awarded/updated\n", changed);
+        ALOG("titles: %d officers awarded/updated", changed);
+    }
+    return changed;
 }
 
 /* ---------------------------------------------------------------- 文本层 */
@@ -647,7 +674,7 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
                                                             gi_hp, gi_mp, gi_jus, gi_pers, wild);
                             if (oi >= 0 && gi_g >= 0) {
                                 /* 整备界面需要的静态档案（2026-09-23） */
-                                s3_officer_set_profile(s3_roster_mut(roster, oi), 0, gi_portrait,
+                                s3_officer_set_profile(s3_roster_mut(roster, oi), -1, gi_portrait,
                                                        gweapon[gi_g], gbook[gi_g], ghorse[gi_g],
                                                        gsa[gi_g], gsa_n[gi_g],
                                                        gst[gi_g], gst_n[gi_g]);
@@ -767,6 +794,8 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
             const char *cn = s3_strategy_city_name(st, i);
             if (cn) s3_roster_mark_city(roster, cn, s3_strategy_city_mine(st, i));
         }
+        /* 官位按等级自动授勋（必须**在 mark_city 之后**：只有我方武将才授勋） */
+        apply_titles(roster);
     }
     printf("strategy: %d cities (%d mine)\n", n, n_mine);
     ALOG("strategy: %d cities (%d mine)", n, n_mine);
@@ -1080,6 +1109,8 @@ static int admin_cmd_cb(void *ud, int group, int item, const char *label) {
         s3_strategy_set_month(g_ast, g_month);
         /* 定稿 M2/M3：月度自动经验 + 自动升级（A1 比例制）—— 需求①「我方将领自动升级」 */
         int ups = g_roster ? s3_roster_monthly_growth(g_roster) : 0;
+        /* 等级变了 → 官位重授（用户 2026-09-23："官位按等级自动授勋"） */
+        if (g_roster && ups > 0) apply_titles(g_roster);
         if (g_roster) s3_roster_end_turn(g_roster);   /* 定稿 A2：回合结束清空"本月已行动" */
         admin_say("第 %d 月開始 —— 金錢 %lld · 人口 %lld · 兵士 %lld（稅收/成長按月攤平）",
                   g_month, money, people, troop);
@@ -1088,29 +1119,28 @@ static int admin_cmd_cb(void *ud, int group, int item, const char *label) {
         return 1;
     }
 
-    /* ---- 整備（定稿 C4②）：2026-09-23 重做为**原版全屏 ARRAY 界面** ----
-     * 原版不选城、不选执行者：直接进界面，用 ←/→（cmd 1/2）切换武将；
-     * 5 个页签 = 陣形 / 兵種 / 必殺技 / 武將技 / 軍師技；右侧 8 个小队编制。
+    /* ---- 整備（定稿 C4②）：原版全屏 `ARRAY` 界面；2026-09-23 按用户要求改为
+     *      **「先列武将名单 → 手动选人 → 再进整备页」** 两步 ----
+     * 原版是直接进界面 + ←/→ 翻将；用户明确要求先给名单（人多了更好找）。
      * 布局见 docs/城池信息面板与行政菜单.md 第八节（id 9000~9530）。 */
     if (group == 1 && item == 3) {
         if (!g_roster || s3_roster_count(g_roster) == 0) { admin_say("整備：尚無武將"); return 1; }
-        int first = -1;
+        int n_mine = 0, first = -1;
         for (int i = 0; i < s3_roster_count(g_roster); ++i) {
             const S3Officer *o = s3_roster_at(g_roster, i);
-            if (o && o->mine && !o->wild) { first = i; break; }
+            if (o && o->mine && !o->wild) { ++n_mine; if (first < 0) first = i; }
         }
         if (first < 0) { admin_say("整備：我方尚無武將"); return 1; }
         if (g_oui) {
             const S3Officer *fo = s3_roster_at(g_roster, first);
             s3_oui_set_lord(g_oui, admin_city_lord_name(fo->city));
-            s3_oui_set_rank(g_oui, "", 0);         /* 官位未任命（首版） */
-            s3_oui_open_array(g_oui, g_roster, first);
+            s3_oui_open_pick(g_oui, g_roster);     /* 第一步：武将名单 */
             s3_admin_set_visible(g_adm, 0);        /* 全屏界面盖住朝堂 → 收起行政菜单 */
             s3_admin_collapse(g_adm);
-            s3_strategy_set_banner(g_ast, "整備：←→ 換武將，長按返回朝堂");
-            admin_say("整備：全屏界面（←→ 換武將，長按返回朝堂）");
-            printf("array screen open: off=%d\n", first);
-            ALOG("array screen open: off=%d", first);
+            s3_strategy_set_banner(g_ast, "整備：先選武將 → 進整備頁（長按逐層返回）");
+            admin_say("整備：我方 %d 名武將，請先選擇（長按逐層返回）", n_mine);
+            printf("array pick open: %d officers\n", n_mine);
+            ALOG("array pick open: %d officers", n_mine);
         }
         return 1;
     }
@@ -1751,13 +1781,18 @@ int main(int argc, char **argv) {
                 static int32_t ou_x = -1, ou_y = -1;
                 s3_oui_on_move(g_oui, pt.inside ? (int32_t)pt.lx : -1,
                                       pt.inside ? (int32_t)pt.ly : -1);
-                if (pt.rclick) {                        /* 长按/返回 = 关界面回朝堂 */
-                    const int was_array = (s3_oui_mode(g_oui) == S3_OUI_ARRAY);
-                    s3_oui_close(g_oui);
-                    if (was_array) {
+                /* 关闭后要恢复的东西（行政菜单在进整备时被收起）。统一收口：
+                 * 长按、点名单面板外关闭、任何别的关闭路径都走同一段恢复逻辑
+                 * —— 避免"关掉了但朝堂菜单还藏着"（2026-09-23 自查发现）。 */
+                if (pt.rclick) {                        /* 长按/返回：逐层退（2026-09-23） */
+                    const int still = s3_oui_on_rclick(g_oui);
+                    if (!still) {                       /* 已关闭（名单/信息块）→ 回朝堂 */
                         s3_admin_set_visible(g_adm, 1);
                         s3_strategy_set_banner(g_ast, "");
                         admin_say("整備：返回朝堂");
+                    } else {                            /* 整备页 → 回武将名单，界面仍开着 */
+                        s3_strategy_set_banner(g_ast, "整備：已回武將名單（再長按返回朝堂）");
+                        admin_say("整備：已回武將名單");
                     }
                 } else {
                     if (pt.lclick) { ou_down = 1; ou_x = (int32_t)pt.lx; ou_y = (int32_t)pt.ly; }
@@ -1765,7 +1800,7 @@ int main(int argc, char **argv) {
                         ou_down = 0;
                         const int r = s3_oui_on_click(g_oui, ou_x, ou_y);
                         if (r == 0 && s3_oui_mode(g_oui) == S3_OUI_ARRAY) {
-                            /* 换了武将 → 重设「君主」行 */
+                            /* 选人 / ←→ 换将 → 重设「君主」行 */
                             const int off = s3_oui_off(g_oui);
                             const S3Officer *o = (off >= 0) ? s3_roster_at(g_roster, off) : NULL;
                             s3_oui_set_lord(g_oui, o ? admin_city_lord_name(o->city) : NULL);
@@ -1785,6 +1820,12 @@ int main(int argc, char **argv) {
                                  s3_oui_last_learn_cost(g_oui));
                         }
                     }
+                }
+                /* 收口：本次事件里界面被关掉了 → 恢复朝堂（行政菜单在进整备时被收起）。
+                 * 覆盖"点名单面板外关闭"等所有关闭路径，免得关了界面菜单还藏着。 */
+                if (!s3_oui_active(g_oui)) {
+                    s3_admin_set_visible(g_adm, 1);
+                    s3_strategy_set_banner(g_ast, "");
                 }
                 SDL_Delay(16);
                 continue;

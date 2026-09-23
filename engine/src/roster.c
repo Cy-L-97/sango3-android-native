@@ -64,6 +64,10 @@ int s3_roster_add_ex(S3Roster *r, const char *name, const char *city,
     o->merit       = S3_MERIT_INITIAL;  /* 【待测】见 roster.h 的说明（战斗线落地后改回 0） */
     o->wins = o->losses = 0;
     o->troops = 0;                      /* 由「調兵」分配（本批未做） */
+    /* ---- 官位（2026-09-23）：未授勋，等 `s3_roster_auto_titles()` 按等级写入 ---- */
+    o->rank_no = -1;
+    o->rank_name[0] = '\0';
+    o->rank_soldiers = 0;
     return r->n++;
 }
 
@@ -272,21 +276,67 @@ void s3_officer_set_profile(S3Officer *o, int rank_no, int portrait,
     }
 }
 
+/* 单将带兵上限（**定稿 J8，用户 2026-09-23 重申"按定稿来"**）
+ *   = 等级×40 + 官位加成（o->rank_soldiers，由 s3_roster_auto_titles 自动授勋写入）
+ * ⚠ 原版是**仅官位值**（驃騎將軍 400）；这是有意的差异，不再改。 */
 int s3_officer_troop_limit(const S3Officer *o) {
     if (!o) return 0;
     int lv = o->level;
     if (lv < 1) lv = 1;
     if (lv > S3_LEVEL_MAX) lv = S3_LEVEL_MAX;
-    return lv * S3_TROOPS_PER_LEVEL;
+    int cap = lv * S3_TROOPS_PER_LEVEL + o->rank_soldiers;
+    if (cap < 0) cap = 0;
+    return cap;
 }
 
-/* 定稿 J8：带兵上限 = 等级×40 + 官职加成。
- * ⚠ 原版是**仅官位值**（GenTitle.ini 的 Soldiers，驃騎將軍 400）—— 差异已登记在
- *   docs/城池信息面板与行政菜单.md 第八节，待用户拍板是否改成原版口径。 */
+/* 兼容旧调用（信息块浮层）：传 0 时用武将自身已授勋的加成 */
 int s3_officer_troop_limit_ex(const S3Officer *o, int rank_soldiers) {
-    int base = s3_officer_troop_limit(o);
-    if (rank_soldiers > 0) base += rank_soldiers;
-    return base;
+    if (rank_soldiers > 0) {
+        int lv = o ? o->level : 1;
+        if (lv < 1) lv = 1;
+        if (lv > S3_LEVEL_MAX) lv = S3_LEVEL_MAX;
+        return lv * S3_TROOPS_PER_LEVEL + rank_soldiers;
+    }
+    return s3_officer_troop_limit(o);
+}
+
+/* ---------------------------------------------------------------- 官位自动授勋
+ * 用户 2026-09-23 裁决："官位可以按照等级自动授勋"（原版是君主任命）。
+ * 规则见 roster.h。档内分散用**确定性下标取模**，不开随机数（便于回归/复现）。 */
+int s3_roster_auto_titles(S3Roster *r, const S3TitleRow *rows, int n_rows) {
+    if (!r || !rows || n_rows <= 0) return 0;
+    int changed = 0;
+    for (int i = 0; i < r->n; ++i) {
+        S3Officer *o = &r->o[i];
+        /* 只有我方非在野武将授勋（在野/他方 = 无官位） */
+        if (o->wild || !o->mine) {
+            if (o->rank_no != -1 || o->rank_soldiers != 0 || o->rank_name[0]) {
+                o->rank_no = -1;
+                o->rank_name[0] = '\0';
+                o->rank_soldiers = 0;
+                ++changed;
+            }
+            continue;
+        }
+        /* 取 level <= 武将等级 的最高一档；同档并列多个 → 按下标取模分散 */
+        int best_lv = -1, first = -1, cnt = 0;
+        for (int k = 0; k < n_rows; ++k) {
+            if (rows[k].level > o->level) continue;
+            if (rows[k].level > best_lv) { best_lv = rows[k].level; first = k; cnt = 1; }
+            else if (rows[k].level == best_lv) { ++cnt; }
+        }
+        if (first < 0) continue;                    /* 等级低于最低官位门槛（Lv1 校尉）→ 无官位 */
+        const int pick = first + (i % (cnt > 0 ? cnt : 1));
+        const S3TitleRow *tr = &rows[pick];
+        if (o->rank_no == pick && o->rank_soldiers == tr->soldiers &&
+            strcmp(o->rank_name, tr->name) == 0)
+            continue;                               /* 官位未变 */
+        o->rank_no = pick;
+        snprintf(o->rank_name, sizeof o->rank_name, "%.31s", tr->name);
+        o->rank_soldiers = tr->soldiers;
+        ++changed;
+    }
+    return changed;
 }
 
 /* ================================================================== P1（2026-09-22）

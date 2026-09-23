@@ -46,7 +46,8 @@ typedef struct S3OfficerUI S3OfficerUI;
 typedef enum {
     S3_OUI_NONE  = 0,
     S3_OUI_CARD  = 1,     /* 武将信息块浮层（情報 用；点任意处关闭） */
-    S3_OUI_ARRAY = 2      /* 整备全屏界面 */
+    S3_OUI_PICK  = 2,     /* 武将名单（先选人，再进整备页；用户 2026-09-23 要求） */
+    S3_OUI_ARRAY = 3      /* 整备全屏界面 */
 } S3OuiMode;
 
 S3OfficerUI *s3_oui_new(S3OuiDrawText draw_text, void *text_ud,
@@ -58,22 +59,26 @@ void         s3_oui_set_tables(S3OfficerUI *u, const S3ArrayTables *t);
 void s3_oui_show_card(S3OfficerUI *u, const S3Officer *o, const char *lord,
                       int rank_soldiers);
 
-/* ---- 整备全屏界面 ---- */
+/* ---- 整备：① 武将名单（先选人）→ ② 整备全屏界面 ---- */
+/* 打开武将名单（列出**我方全部非在野武将**）。点某行 → 自动切进该将的整备页。 */
+void s3_oui_open_pick(S3OfficerUI *u, S3Roster *roster);
+/* 打开某武将的整备页（名单里选中后调用；也供外部直达） */
 void s3_oui_open_array(S3OfficerUI *u, S3Roster *roster, int off_idx);
 /* 设置「君主」显示名（信息块第 2 行）。切换武将后调用方需重设。 */
 void s3_oui_set_lord(S3OfficerUI *u, const char *lord_name);
-/* 设置官位名（未任命传 NULL/"" → 显示「—」）。
- * 原版官位是运行时任命的，首版未做任免 → 恒为「—」，见 docs 第八节。 */
-void s3_oui_set_rank(S3OfficerUI *u, const char *rank_name, int rank_soldiers);
 void s3_oui_close(S3OfficerUI *u);
 int  s3_oui_active(const S3OfficerUI *u);
 int  s3_oui_mode(const S3OfficerUI *u);
 int  s3_oui_off(const S3OfficerUI *u);
 
 void s3_oui_on_move(S3OfficerUI *u, int32_t x, int32_t y);
-/* 返回：-1 未处理 · -2 已关闭 · -3 已消费（切页签/选中/取消确认）·
- *       0 切换了武将（调用方刷新提示）· >=0 = **学成了第 i 项技**（调用方记账/提示） */
+/* 返回：-1 未处理 · -2 已关闭 · -3 已消费（切页签/切筛选/翻页/选中/取消确认）·
+ *       0 当前武将变了（进入整备页 或 ←→ 换将；调用方刷新「君主」行）·
+ *       1 = **学成了**（结果见 s3_oui_last_learn_*） */
 int  s3_oui_on_click(S3OfficerUI *u, int32_t x, int32_t y);
+/* 长按/返回：整备页 → 回武将名单（返回 1，界面仍激活）；名单/信息块 → 关闭（返回 0）。
+ * 对应原版的层级退出（用户 2026-09-23 之前的习惯是"长按退一层"）。 */
+int  s3_oui_on_rclick(S3OfficerUI *u);
 
 /* 最近一次学技的结果（供调用方拼提示） */
 const char *s3_oui_last_learn_name(const S3OfficerUI *u);
