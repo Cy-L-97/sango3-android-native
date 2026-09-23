@@ -401,6 +401,11 @@ float sango3_presenter_scale(const Sango3Presenter *p) {
     return p ? p->vp.scale : 1.0f;
 }
 
+void sango3_presenter_output_size(const Sango3Presenter *p, int32_t *w, int32_t *h) {
+    if (w) *w = p ? p->out_w : 0;
+    if (h) *h = p ? p->out_h : 0;
+}
+
 void sango3_presenter_pointer(const Sango3Presenter *p, S3Pointer *out) {
     if (!out) return;
     if (!p) { memset(out, 0, sizeof *out); return; }

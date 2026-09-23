@@ -113,6 +113,14 @@ int  s3_strategy_view_h(const S3Strategy *s);
 int  s3_strategy_view_x(const S3Strategy *s);
 int  s3_strategy_view_y(const S3Strategy *s);
 
+/* ---- 朝堂 UI 层拆分（2026-09-23）---------------------------------------------
+ * 背景（朝堂 CG → 画布铺满拉伸）与 UI（顶部信息条 + 城池信息面板）分开画：
+ *   · s3_strategy_set_hud_enabled(st, 0) → 主画布只出背景（UI 另画）；
+ *   · s3_strategy_draw_court_ui(st, cv) → 把信息条 + 城池面板画到**指定的 UI 画布**上。
+ * 目的：朝堂画布做成"与屏幕同比例"后背景照旧铺满，而 UI 画在 640×480 层里 1:1 贴回 → UI 不变形。 */
+void s3_strategy_set_hud_enabled(S3Strategy *s, int on);
+void s3_strategy_draw_court_ui(S3Strategy *s, Sango3Canvas *cv);
+
 void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv);
 /* 逻辑坐标点击：命中某城则选中它（命中范围按地图缩放后的城市图标大小放宽） */
 void s3_strategy_on_click(S3Strategy *s, int32_t lx, int32_t ly);

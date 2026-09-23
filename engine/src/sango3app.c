@@ -1257,8 +1257,8 @@ static int admin_cmd_cb(void *ud, int group, int item, const char *label) {
  *   2 = 大地图（素材原生分辨率视口 + COVER + BILINEAR） */
 static int32_t g_vw = 1024, g_vh = 768;    /* 地图视口尺寸（mode 3 进入时计算） */
 static void apply_present(Sango3Presenter *p, int kind, int32_t cw, int32_t ch) {
-    static int cur = -1;
-    if (cur == kind) return;
+    static int cur = -1; static int32_t cur_w = 0, cur_h = 0;
+    if (cur == kind && cur_w == cw && cur_h == ch) return;
     if (kind == 2) {
         sango3_presenter_set_logical_size(p, g_vw, g_vh);
         sango3_presenter_set_aspect(p, SANGO3_ASPECT_COVER);
@@ -1269,7 +1269,44 @@ static void apply_present(Sango3Presenter *p, int kind, int32_t cw, int32_t ch) 
                                                  : SANGO3_ASPECT_EXTEND);
         sango3_presenter_set_filter(p, SANGO3_FILTER_NEAREST);
     }
-    cur = kind;
+    cur = kind; cur_w = cw; cur_h = ch;
+}
+
+/* ============================================ 朝堂"UI 正比例"层（2026-09-23）
+ * 用户指正："确实宽得别扭，但我说的是菜单选单，背景还可以"。
+ * 朝堂此前整图 STRETCH（640×480 → 2560×1392，x 缩放 4.0 / y 只有 2.9）→ UI 被横向拉宽 38%。
+ * 做法（背景照旧铺满、UI 不再变形）：
+ *   ① 把**朝堂画布**做成"与窗口同比例"：宽 = 480 × 窗口宽/窗口高，高 480
+ *      → 此时 STRETCH 等价于等比放大；朝堂 CG（640×480）由 strategy_scene 铺满这块画布，
+ *        看起来仍是"拉伸铺满"（用户确认背景 ok）。
+ *   ② UI（信息条 + 城池面板 + 行政主選單 + 执行者选择 + 整备/情報）统一画在
+ *      **640×480 的独立画布** `cv_ui`（透明底）上，再 **1:1 居中贴回**主画布
+ *      → UI 保持 4:3 原比例、尺寸与"等比铺满"一致，不再被拉宽。
+ *   ③ 命中判定：UI 模块吃的是"UI 坐标"，故指针 x 要减去 UI 层偏移 g_ui_x0。 */
+#define S3_UI_W 640
+#define S3_UI_H 480
+static Sango3Canvas *g_cv_ui = NULL;    /* UI 层画布（640×480，透明底） */
+static int32_t        g_ui_x0 = 0;      /* UI 层在主画布里的水平偏移（居中） */
+
+/* 按需重建画布（尺寸不变则不动） */
+static void canvas_resize(Sango3Canvas **pcv, int32_t w, int32_t h) {
+    if (!pcv || !*pcv) return;
+    if ((*pcv)->w == w && (*pcv)->h == h) return;
+    Sango3Canvas *nc = sango3_canvas_new(w, h, 0, 0, 0);
+    if (!nc) return;
+    sango3_canvas_free(*pcv);
+    *pcv = nc;
+}
+
+/* 朝堂画布宽度 = 480 × 窗口比例（保持在合理范围） */
+static int32_t court_canvas_w(Sango3Presenter *p) {
+    int32_t ow = 0, oh = 0;
+    sango3_presenter_output_size(p, &ow, &oh);
+    if (ow <= 0 || oh <= 0 || ow <= oh) return S3_UI_W;   /* 尺寸未知/竖屏 → 退回 4:3 */
+    int32_t w = (int32_t)((double)S3_UI_H * (double)ow / (double)oh + 0.5);
+    if (w < S3_UI_W)  w = S3_UI_W;
+    if (w > 1600)     w = 1600;
+    return w;
 }
 
 /* ---------------------------------------------------------------- selftest */
@@ -1510,6 +1547,9 @@ int main(int argc, char **argv) {
     for (;;) {
         if (mode == 1) {
             /* ================= 创建武将表单 ================= */
+            /* 朝堂用过"屏幕比例画布"→ 这些 640×480 场景要还原（防御性，正常流程已由菜单分支还原） */
+            canvas_resize(&cv, cw, ch);
+            apply_present(p, 0, cw, ch);
             if (!ed) ed = s3_editor_new(draw_text_cb, &fc, read_asset_cb, &ctx);
             ms.roots = SC_EDITOR_BG;
             ms.n_roots = NARR(SC_EDITOR_BG);
@@ -1569,7 +1609,9 @@ int main(int argc, char **argv) {
              * 地图 + 左侧君主列表（君主/相/武/智/忠/士）+ 选中君主的城池高亮插旗 +
              * 右侧城池面板（strategy 的 7400）+ 右侧肖像 + 底部统计栏。
              * 旧的 kingdom_scene 纯列表退役（模块保留，供其它入口复用）。 */
+            canvas_resize(&cv, cw, ch);      /* 防御：朝堂可能把 cv 撑成"屏幕比例" */
             if (!st) st = s3_strategy_new(read_asset_cb, &ctx, draw_text_cb, &fc);
+            s3_strategy_set_hud_enabled(st, 1);   /* 这些视图的 HUD 画在自己画布上（朝堂会关掉它） */
             if (!g_lp) g_lp = s3_lordpick_new(draw_text_cb, &fc, read_asset_cb, &ctx);
             /* 只在**首次进入**装载地图/城池（选君主期间反复点行不重载） */
             if (!g_lp_ready) {
@@ -1699,7 +1741,9 @@ int main(int argc, char **argv) {
 
         if (mode == 3) {
             /* ================= 进入战略层 ================= */
+            canvas_resize(&cv, cw, ch);      /* 防御：朝堂可能把 cv 撑成"屏幕比例" */
             if (!st) st = s3_strategy_new(read_asset_cb, &ctx, draw_text_cb, &fc);
+            s3_strategy_set_hud_enabled(st, 1);   /* 这些视图的 HUD 画在自己画布上（朝堂会关掉它） */
             if (s3_strategy_set_map(st, "Shape\\AD\\Base\\Map.shp") != 0)
                 ALOG("strategy map load FAILED");
             /* 城池信息面板底图（原版 7400 / AD\Base\CityInfo.shp，标签烘焙在图内） */
@@ -1818,7 +1862,16 @@ int main(int argc, char **argv) {
         if (mode == 5 || mode == 4) {
             /* ============ 战略层：朝堂（5，内政阶段）/ 大地图（4） ============ */
             const int court = (mode == 5);
-            apply_present(p, court ? 1 : 2, cw, ch);
+            if (court) {
+                /* 朝堂：画布比例对齐屏幕（背景照旧铺满拉伸）+ UI 层画布/偏移（见"朝堂 UI 正比例层"） */
+                canvas_resize(&cv, court_canvas_w(p), S3_UI_H);
+                g_ui_x0 = (cv->w - S3_UI_W) / 2;
+                if (g_ui_x0 < 0) g_ui_x0 = 0;
+                if (!g_cv_ui) g_cv_ui = sango3_canvas_new(S3_UI_W, S3_UI_H, 0, 0, 0);
+                apply_present(p, 1, cv->w, S3_UI_H);
+            } else {
+                apply_present(p, 2, cw, ch);
+            }
             s3_strategy_set_view(st, court);
             s3_strategy_set_panel_zoom(st, court ? 1 : 2);   /* 640 画布用原版尺寸 */
             /* 菜单几何随视图：朝堂 640×480 用原版尺寸（zoom 1，2026-09-16 用户反馈
@@ -1850,24 +1903,45 @@ int main(int argc, char **argv) {
                     if (s3_strategy_city_mine(st, i)) { first = i; break; }
                 s3_strategy_select(st, first);
             }
-            Sango3Canvas *cvc = court ? cv : cv_map;
-            s3_strategy_render(st, cvc);
-            s3_admin_render(g_adm, cvc);
-            s3_picker_render(g_picker, cvc);
-            s3_oui_render(g_oui, cvc);          /* P1：信息块 / 整备·学技（最上层） */
-            sango3_presenter_upload(p, cvc->px);
+            if (court) {
+                /* 朝堂：① 底图铺满（CG 由 strategy_scene 拉伸到"屏幕比例画布"，观感与原先一致）
+                 *      ② UI 层单独画在 640×480 透明画布上 → 1:1 居中贴回 → UI 不变形 */
+                s3_strategy_set_hud_enabled(st, 0);
+                s3_strategy_render(st, cv);
+                if (g_cv_ui) {
+                    memset(g_cv_ui->px, 0, (size_t)g_cv_ui->w * g_cv_ui->h * 4);  /* 透明底 */
+                    s3_strategy_set_hud_enabled(st, 1);      /* 信息条/城池面板 → 画到 UI 层 */
+                    s3_strategy_draw_court_ui(st, g_cv_ui);
+                    s3_strategy_set_hud_enabled(st, 0);      /* 主画布上不再画 HUD */
+                    s3_admin_render(g_adm, g_cv_ui);
+                    s3_picker_render(g_picker, g_cv_ui);
+                    s3_oui_render(g_oui, g_cv_ui);           /* 最上层：整备 / 情報信息块 */
+                    sango3_canvas_blit(cv, g_cv_ui->px, g_cv_ui->w, g_cv_ui->h, g_ui_x0, 0, 1);
+                }
+                sango3_presenter_upload(p, cv->px);
+            } else {
+                s3_strategy_set_hud_enabled(st, 1);          /* 地图视图：HUD 画在本画布 */
+                s3_strategy_render(st, cv_map);
+                s3_admin_render(g_adm, cv_map);
+                s3_picker_render(g_picker, cv_map);
+                s3_oui_render(g_oui, cv_map);
+                sango3_presenter_upload(p, cv_map->px);
+            }
             if (sango3_presenter_frame(p, &drawn)) break;
 
             S3Pointer pt;
             sango3_presenter_pointer(p, &pt);
-            s3_admin_on_move(g_adm, pt.inside ? (int32_t)pt.lx : -1,
-                                   pt.inside ? (int32_t)pt.ly : -1);
+            /* UI 模块的命中判定吃"UI 坐标"：朝堂 UI 层在主画布里居中，故 x 要减去该偏移
+             * （地图/菜单视图 ui_ox = 0，行为不变）—— 见"朝堂 UI 正比例层"注释。 */
+            const int32_t ui_ox  = court ? g_ui_x0 : 0;
+            const int32_t pt_ux  = pt.inside ? (int32_t)(pt.lx - ui_ox) : -1;
+            const int32_t pt_uy  = pt.inside ? (int32_t)pt.ly : -1;
+            s3_admin_on_move(g_adm, pt_ux, pt_uy);
             /* ---- 整备全屏界面 / 情報信息块：激活时独占事件（最上层） ---- */
             if (s3_oui_active(g_oui)) {
                 static int ou_down = 0;
                 static int32_t ou_x = -1, ou_y = -1;
-                s3_oui_on_move(g_oui, pt.inside ? (int32_t)pt.lx : -1,
-                                      pt.inside ? (int32_t)pt.ly : -1);
+                s3_oui_on_move(g_oui, pt_ux, pt_uy);
                 /* 关闭后要恢复的东西（行政菜单在进整备时被收起）。统一收口：
                  * 长按、点名单面板外关闭、任何别的关闭路径都走同一段恢复逻辑
                  * —— 避免"关掉了但朝堂菜单还藏着"（2026-09-23 自查发现）。 */
@@ -1883,7 +1957,7 @@ int main(int argc, char **argv) {
                         admin_say("整備：已回武將名單");
                     }
                 } else {
-                    if (pt.lclick) { ou_down = 1; ou_x = (int32_t)pt.lx; ou_y = (int32_t)pt.ly; }
+                    if (pt.lclick) { ou_down = 1; ou_x = pt_ux; ou_y = pt_uy; }
                     /* `!pt.longpress`：长按（=右键）抬起时不得再算一次点击 ——
                      * 否则"整备页长按 → 回到名单"的那次抬起会在名单上再点一下
                      * （压点落在名单面板外 → 名单关闭 → 看着像"瞬间又退回朝堂"）。 */
@@ -1925,8 +1999,7 @@ int main(int argc, char **argv) {
             if (s3_picker_active(g_picker)) {
                 static int pk_down = 0;
                 static int32_t pk_x = -1, pk_y = -1;
-                s3_picker_on_move(g_picker, pt.inside ? (int32_t)pt.lx : -1,
-                                            pt.inside ? (int32_t)pt.ly : -1);
+                s3_picker_on_move(g_picker, pt_ux, pt_uy);
                 if (pt.rclick) {                        /* 长按/返回 = 取消本次命令 */
                     pk_down = 0;                        /* 长按抬起不再算点击 */
                     s3_picker_close(g_picker);
@@ -1934,7 +2007,7 @@ int main(int argc, char **argv) {
                     mode = 5;
                 } else {
                     int off = -1, cancel = 0;
-                    if (pt.lclick) { pk_down = 1; pk_x = (int32_t)pt.lx; pk_y = (int32_t)pt.ly; }
+                    if (pt.lclick) { pk_down = 1; pk_x = pt_ux; pk_y = pt_uy; }
                     if (!pt.ldown && pk_down && !pt.longpress) {
                         pk_down = 0;
                         s3_picker_on_click(g_picker, pk_x, pk_y, &off, &cancel);
@@ -2078,7 +2151,7 @@ int main(int argc, char **argv) {
                 /* 朝堂：点击只归行政主選單 */
                 static int32_t spx = -1, spy = -1;
                 static int sdown = 0;
-                if (pt.lclick) { sdown = 1; spx = (int32_t)pt.lx; spy = (int32_t)pt.ly; }
+                if (pt.lclick) { sdown = 1; spx = pt_ux; spy = pt_uy; }
                 if (!pt.ldown && sdown) { sdown = 0; s3_admin_on_click(g_adm, spx, spy); }
             }
             SDL_Delay(16);
@@ -2086,6 +2159,7 @@ int main(int argc, char **argv) {
         }
 
         /* ================= 菜单场景 ================= */
+        canvas_resize(&cv, cw, ch);      /* 朝堂用过"屏幕比例画布"→ 回菜单要还原 640×480 */
         apply_present(p, 0, cw, ch);
         ms.roots = app.roots;
         ms.n_roots = app.n_roots;
@@ -2205,7 +2279,8 @@ int main(int argc, char **argv) {
     s3_font_quit();
     sango3_presenter_free(p);
     sango3_canvas_free(cv);
-    if (cv_map) sango3_canvas_free(cv_map);
+    if (cv_map)  sango3_canvas_free(cv_map);
+    if (g_cv_ui) sango3_canvas_free(g_cv_ui);
     s3_ui_free(&L);
     s3_ini_free(ini);
     for (int k = 0; k < ctx.n_ar; ++k) pak_close(&ctx.ar[k]);

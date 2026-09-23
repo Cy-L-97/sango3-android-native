@@ -88,6 +88,9 @@ typedef struct {
     int   longpress;
 } S3Pointer;
 
+/* 当前输出（窗口）像素尺寸 —— app 用它算"画布比例对齐屏幕"（2026-09-23）。 */
+void sango3_presenter_output_size(const Sango3Presenter *p, int32_t *w, int32_t *h);
+
 void sango3_presenter_pointer(const Sango3Presenter *p, S3Pointer *out);
 
 /* ---- 文本输入 / 按键轮询（frame() 期间收集，取走即出队）----

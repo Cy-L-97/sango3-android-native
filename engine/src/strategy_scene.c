@@ -58,6 +58,7 @@ struct S3Strategy {
     ShpImage court;              /* 朝堂背景（AD\Background\BG001~003，640×480） */
     int      court_ok;
     int      is_court;           /* 1 = 朝堂视图（内政阶段） */
+    int      hud_on;             /* 1 = 在**本画布**上画信息条/城池面板（2026-09-23：朝堂改由 UI 层单独画） */
 
     StratCity city[S3_STRAT_MAX_CITIES];
     int       n_cities;
@@ -88,6 +89,7 @@ S3Strategy *s3_strategy_new(S3StratReadAsset read_asset, void *asset_ud,
     s->draw_text = draw_text;   s->text_ud = text_ud;
     s->sel = -1;
     s->panel_zoom = 2;           /* 战略层画布 = 地图原生 1024×768 → 一档放大 */
+    s->hud_on = 1;               /* 默认画 HUD（地图视图要；朝堂由 app 关掉并画到 UI 层） */
     return s;
 }
 
@@ -100,6 +102,10 @@ void s3_strategy_free(S3Strategy *s) {
 }
 
 void s3_strategy_set_view(S3Strategy *s, int court) { if (s) s->is_court = court ? 1 : 0; }
+
+/* 见 .h：朝堂底图与 UI 分层渲染（2026-09-23） */
+void s3_strategy_set_hud_enabled(S3Strategy *s, int on) { if (s) s->hud_on = on ? 1 : 0; }
+void s3_strategy_draw_court_ui(S3Strategy *s, Sango3Canvas *cv) { if (s && cv) draw_hud(s, cv); }
 int  s3_strategy_court(const S3Strategy *s) { return s ? s->is_court : 0; }
 
 int s3_strategy_set_court_bg(S3Strategy *s, const char *pak_path) {
@@ -325,7 +331,7 @@ void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
                 }
             }
         }
-        draw_hud(s, cv);                               /* 信息条 + 城池面板 */
+        if (s->hud_on) draw_hud(s, cv);                /* 信息条 + 城池面板（朝堂视图由 UI 层单独画） */
         return;
     }
 
@@ -385,7 +391,7 @@ void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
                        s->city[i].det.lord);
     }
 
-    draw_hud(s, cv);
+    if (s->hud_on) draw_hud(s, cv);
 }
 
 /* ----------------------------------------------------- I1：城池插所属势力旗
