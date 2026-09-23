@@ -128,5 +128,42 @@ print(re.search(r'<url>([^<]+)</url>', data[i:i+4000]).group(1))
   `SANGO3_ASPECT_COVER`（内容类场景如地图：铺满裁切、顶对齐）；`sango3app --aspect` 可运行时切。
 - **资源靠 adb push**：正式分发时应把 PAK 打进 APK assets 或做首次启动解包（版权与体积需权衡）。
 - **竖屏锁**：manifest 里 `screenOrientation="landscape"`（SDL2 模板自带），实机为横屏显示。
-- **实测窗口尺寸**：横屏 `2560×1392` / 竖屏 `1080×1848`；
-  `input tap` 注入坐标与 presenter 反算有 ~72px(y) 偏差（原因未查，不影响真人操作）。
+- **实测窗口尺寸**：横屏 `2560×1392` / 竖屏 `1080×1848`（窗口**在状态栏之下**，故 y 有偏移）。
+- ✅ **`input tap` 坐标映射已解出（2026-09-23，此前记的"~72px 偏差原因未查"作废）**：
+  朝堂/菜单等 640×480 逻辑画布（`STRETCH` 或 `EXTEND`）下，
+
+  ```
+  physical_x = lx * (窗口宽 / 640)          # 2560/640 = 4.0
+  physical_y = 49 + ly * (窗口高 / 480)     # 49 ≈ 状态栏高度；1392/480 = 2.9
+  # 反算：lx = px / 4.0 ;  ly = (py - 49) / 2.9
+  ```
+  实测标定：点 `(400,600)` → 应用收到 `(100,190)`；点 `(732,789)` → `(183,255)` ✓ 与公式一致。
+  地图（原生分辨率视口 + COVER）另算，别套这组。
+
+
+## 八、用 adb 自查界面（截图 + 点击驱动）—— 2026-09-23
+
+> 用途：**不用等用户反馈**，自己把界面走到目标页并截图肉眼验收（本轮"整备页乱七八糟"就是这样定位的）。
+
+```python
+# 循环：tap → screencap → pull → 用 Read 看图 → 决策
+ADB='F:/leidian/LDPlayer9/adb.exe'
+subprocess.run([ADB,'shell','input','tap',str(px),str(py)])          # 坐标用上面的公式换算
+subprocess.run([ADB,'shell','screencap','-p','/sdcard/s.png'])
+subprocess.run([ADB,'pull','/sdcard/s.png', r'E://sango3-android//shots//s.png'])   # ⚠ 必须纯 ASCII 路径
+```
+
+**四条坑（都踩过）**：
+1. **`adb pull` 的目标路径不能带中文**（`E://用户//...` 会报 `cannot create file/directory`）→
+   统一拉到 `E:/sango3-android/shots/`（ASCII）再看。
+2. **Git Bash 会把 `/sdcard/x.png` 当 Windows 路径转换**（报 `C:/...PortableGit/sdcard/x.png` 不存在）→
+   所有 adb 调用**走 Python subprocess**，不要在 bash 里直接写设备路径。
+3. **`input tap` 的 y 命中偏差来自窗口偏移**（见第七节公式），不是随机的；要点"某一行"时，
+   按公式算出的坐标若偏一行，就按行距（列表行高 × 缩放）微调后再点。
+4. **看不清"为什么某块没出来"时，先加诊断日志再截图**：本次给 `officer_ui` 加了
+   `s3_oui_set_log()` 通道 → app 接到 `ALOG`，一条 `face: ... ok=0 err=-` 立刻暴露了
+   `shp_decode` 判断写反（截图只能看到"肖像没显示"，日志才指出"取到了、没报错、状态是失败"）。
+
+**走位参考（黄巾之乱 / 張角，本轮实测可用）**：
+`開始遊戲(1280,655)` → `黃巾之亂(1280,499)` → `張角行(135,555)` → `決定(640,1301)` →
+`軍政(391,251)` → `整備(782,422)` → `名单里張角(400,600)` → `武將技页签(732,789)`。

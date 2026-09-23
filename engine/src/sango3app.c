@@ -105,6 +105,11 @@ static uint8_t *read_asset_cb(void *ud, const char *path, uint32_t *out_len) {
     return pak_get((PakCtx *)ud, path, out_len);
 }
 
+/* officer_ui 的诊断日志 → ALOG（2026-09-23：整备页肖像一直不显示，需要看到原因） */
+static void oui_log_cb(void *ud, const char *msg) {
+    (void)ud; (void)msg; ALOG("%s", msg);
+}
+
 static int include_cb(const char *name, unsigned char **out_data, size_t *out_n, void *ud) {
     PakCtx *c = (PakCtx *)ud;
     char path[600];
@@ -292,6 +297,24 @@ static void load_aux_tables_from_pak(PakCtx *c) {
            g_n_titles, g_n_form, g_n_soldier, g_n_equip);
     ALOG("aux tables: titles=%d forms=%d soldiers=%d equip=%d",
          g_n_titles, g_n_form, g_n_soldier, g_n_equip);
+}
+
+/* 肖像探针（2026-09-23 诊断）：整备页左上角一直只显示姓名，需确认是"取不到"还是"解不开"。
+ * 用与 officer_ui 完全相同的路径与解码器，打一条日志即可定位。 */
+static void probe_portrait_pak(PakCtx *c) {
+    static const char *PATH = "Shape\\Portrait\\Portrait181.SHP";
+    uint32_t len = 0;
+    uint8_t *d = pak_get(c, PATH, &len);
+    if (!d) { ALOG("portrait probe: RAW=NULL (%s)", PATH); return; }
+    ShpImage im; const char *err = NULL;
+    const int ok = shp_decode(d, len, &im, &err);
+    if (ok) {
+        ALOG("portrait probe: OK %ux%u frames=%u (%s, %u bytes)",
+             im.width, im.height, im.frame_cnt, PATH, len);
+        shp_free(&im);
+    } else {
+        ALOG("portrait probe: DECODE FAIL (%s, %u bytes): %s", PATH, len, err ? err : "?");
+    }
 }
 
 /* 官位自动授勋（用户 2026-09-23 裁决："官位可以按照等级自动授勋"）。
@@ -1446,6 +1469,7 @@ int main(int argc, char **argv) {
     load_magics_from_pak(&ctx);
     /* 2026-09-23：官位/阵形/兵种表（整备界面用） */
     load_aux_tables_from_pak(&ctx);
+    probe_portrait_pak(&ctx);       /* 一次性诊断：整备页肖像是否取得到/解得开 */
 
     App app;
     memset(&app, 0, sizeof app);
@@ -1775,6 +1799,7 @@ int main(int argc, char **argv) {
                 tabs.bf = g_bf; tabs.n_bf = g_n_bf;
                 tabs.sf = g_sf; tabs.n_sf = g_n_sf;
                 s3_oui_set_tables(g_oui, &tabs);
+                s3_oui_set_log(g_oui, oui_log_cb, NULL);
             }
             /* 名册的 new/clear 已提前到 load_cities 之前（BUG-1） */
             g_ast = st; g_kd = kd; g_start_path = start_path; g_admin_quit = 0;

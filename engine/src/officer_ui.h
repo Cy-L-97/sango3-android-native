@@ -54,6 +54,10 @@ S3OfficerUI *s3_oui_new(S3OuiDrawText draw_text, void *text_ud,
                         S3OuiReadAsset read_asset, void *asset_ud);
 void         s3_oui_free(S3OfficerUI *u);
 void         s3_oui_set_tables(S3OfficerUI *u, const S3ArrayTables *t);
+/* 日志通道（可选）：传进来后，模块内的诊断信息（如肖像加载失败原因）会走这里。
+ * app 侧一般接到 ALOG，便于在 logcat 里定位"界面里某块没出来"的原因（2026-09-23）。 */
+typedef void (*S3OuiLog)(void *ud, const char *msg);
+void         s3_oui_set_log(S3OfficerUI *u, S3OuiLog fn, void *ud);
 
 /* ---- 武将信息块浮层（情報） ---- */
 void s3_oui_show_card(S3OfficerUI *u, const S3Officer *o, const char *lord,
