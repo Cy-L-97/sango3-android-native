@@ -37,6 +37,38 @@ extern "C" {
  * 战斗线落地后应改回 0（由战斗/比武产出）。 */
 #define S3_MERIT_INITIAL 500
 
+/* ---------------- 本批（2026-09-27，P1 剩余）新增常量 ----------------
+ * 口径来源：`docs/P1剩余-忠诚变动·搜索招揽·離間_调研复核表.md`（用户 2026-09-27 逐行裁定）。
+ * 公式均标【待测】：先按当前值实现并留常量，实测后回改复核表 + 这里。 */
+
+/* M4 等级差加速（用户裁定"采纳"）：与**非我方且非在野**武将的平均等级比。
+ * d = E − 自身等级；d ≥ 15 → ×3、d ≥ 8 → ×2，封顶 ×3。
+ * ⚠ 落地为**只给我方武将加乘**（实现注见复核表第〇节：双向加速会互相抵消）。 */
+#define S3_LEVELGAP_D1      8       /* 第一档阈值 */
+#define S3_LEVELGAP_D2      15      /* 第二档阈值 */
+#define S3_LEVELGAP_MULT_1  2       /* d ≥ 8  → 月经验 ×2 */
+#define S3_LEVELGAP_MULT_2  3       /* d ≥ 15 → 月经验 ×3（封顶） */
+
+/* O-5 離間降幅（用户 2026-09-27 裁定采纳）：Δ = round((100−義理)/10) + round(|相性差|/25)，钳 1~20 */
+#define S3_ESTRANGE_BASE_DIV 10
+#define S3_ESTRANGE_SIM_DIV  25
+#define S3_ESTRANGE_MIN      1
+#define S3_ESTRANGE_MAX      20
+
+/* F3 離間成功率：P% = (|相性差|/148) × 70 × (1 − 義理/100) × 威望系数(暂 1.0)，钳 0~90。
+ * 高义理名将（义理 100）恒 0% —— 对齐"高义理名将基本免疫"。 */
+#define S3_ESTRANGE_P_DIFF   148    /* 相性最大差值（Personality 1~149） */
+#define S3_ESTRANGE_P_SPAN   70     /* 相性项满分 */
+#define S3_ESTRANGE_P_MAX    90
+
+/* X-3 搜索招揽在野武将：P% = 40 + 智力/5 + 等级 + (sim − 50)/2，钳 5~95。【待测】 */
+#define S3_RECRUIT_P_BASE    40
+#define S3_RECRUIT_P_MIN     5
+#define S3_RECRUIT_P_MAX     95
+
+/* ⚠ O-4 忠诚度**自然缓降**：用户 2026-09-27 裁定 **不缓降** —— 本模块**不实现时间衰减**，
+ *   忠诚度只由事件改变（赏赐 +4~+12 / 被离间 −Δ / 解盟 −10）。 */
+
 /* 已学技上限（定稿 P2：学会即永久保留，属性回落也不遗忘）。
  * 武将技 125 + 军师技 23，故给足容量；每人固定数组，不动态分配。 */
 #define S3_MAX_LEARN_BF 128
@@ -145,6 +177,10 @@ int  s3_roster_workers(const S3Roster *r, const char *city,
 int  s3_officer_exp_need(int level);                 /* 从 level 升到 level+1 所需经验 */
 int  s3_officer_add_exp(S3Officer *o, int amount);   /* 加经验并处理升级，返回升了几级 */
 int  s3_roster_monthly_growth(S3Roster *r);          /* 月度自动经验（A1 比例制），返回升级人数 */
+/* 同上，额外返回"受等级差加速（×2/×3）的我方人数"（M4，2026-09-27 落地） */
+int  s3_roster_monthly_growth_ex(S3Roster *r, int *out_boosted);
+/* M4 用：**非我方且非在野**武将的平均等级（无此类武将时返回 0） */
+int  s3_roster_enemy_avg_level(const S3Roster *r);
 /* 难度系数（百分比）：简单 70 / 普通 100 / 困难 150（G3 设置项落地后由 UI 调） */
 void s3_roster_set_exp_difficulty(int percent);
 int  s3_roster_exp_difficulty(void);
@@ -162,6 +198,12 @@ int  s3_roster_worker_count_mine_all(const S3Roster *r, int only_idle);
 int  s3_roster_officers_in_city(const S3Roster *r, const char *city,
                                 int *out, int out_max);
 int  s3_roster_officer_count_in_city(const S3Roster *r, const char *city);
+
+/* 某城中的**在野**武将 —— 定稿 B2/Q4：搜索命中「人才」后的招揽候选。
+ * 数据来源 = `General02.ini` 的 `CityN` 值形如 "城市,野"。 */
+int  s3_roster_wild_in_city(const S3Roster *r, const char *city,
+                            int *out, int out_max);
+int  s3_roster_wild_count_in_city(const S3Roster *r, const char *city);
 
 /* 单将带兵上限（**定稿 J8，用户 2026-09-23 重申"按定稿来"**）：
  *   = 等级×40（S3_TROOPS_PER_LEVEL）+ 官位加成（o->rank_soldiers，由自动授勋写入）
@@ -192,6 +234,26 @@ int  s3_officer_knows_sf(const S3Officer *o, int no);
  * |差| ≤10 → 100 · ≤24 → 85 · ≤49 → 65 · ≤99 → 40 · ≥100 → 15（0~100）。
  * 用于搜索招揽 / 招降 / 离间 / 同盟成功率。 */
 int  s3_personality_similarity(int a, int b);
+
+/* ---------------- 本批（2026-09-27）新增：招揽 / 離間 ----------------
+ * 口径见 `docs/P1剩余-忠诚变动·搜索招揽·離間_调研复核表.md`（用户逐行裁定）。 */
+
+/* X-3 搜索招揽**在野**武将的成功率（%）—— 只看执行者本人与野将的**相性**
+ * （C10 裁决：与君主是谁无关）。actor = 执行者，target = 在野武将。
+ * P% = 40 + 智力/5 + 等级 + (sim − 50)/2，钳 5~95。【待测】 */
+int  s3_recruit_chance(const S3Officer *actor, const S3Officer *target);
+
+/* 招揽成功：野将转我方（wild=0 / mine=1 / city 改写为新城；忠诚度保持 = 义理）。
+ * 返回 1 = 成功；0 = 参数非法（非在野 / 空指针 / 非我方城由调用方保证）。 */
+int  s3_officer_recruit(S3Officer *o, const char *new_city);
+
+/* O-5 離間一次的忠诚下降量：round((100−義理)/10) + round(|相性差|/25)，钳 1~20。
+ * 只看**目标**的义理与双方相性差（义理越高越难降）。【已裁定】 */
+int  s3_estrange_delta(const S3Officer *target, const S3Officer *actor);
+
+/* F3 離間成功率（%）：(|相性差|/148) × 70 × (1 − 義理/100) × 威望系数(暂 1.0)，钳 0~90。
+ * 义理 100 的名将 → 恒 0%（基本免疫）。【待测】 */
+int  s3_estrange_chance(const S3Officer *target, const S3Officer *actor);
 
 /* ---- 装备加成与"有效属性"（2026-09-23）----
  * 有效属性 = 基础（General01 的 Strength/Intelligence）+ 装备加成。

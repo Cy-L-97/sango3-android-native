@@ -77,20 +77,29 @@ static int list_workers(const S3GenPicker *p, int *out, int out_max) {
         return s3_roster_workers_mine_all(p->roster, p->only_idle, out, out_max);
     case S3_PICK_ANY_CITY:
         return s3_roster_officers_in_city(p->roster, p->city, out, out_max);
+    case S3_PICK_WILD_CITY:
+        return s3_roster_wild_in_city(p->roster, p->city, out, out_max);
     default:
         return s3_roster_workers(p->roster, p->city, p->only_idle, out, out_max);
     }
 }
 
 /* 该城"本月未行动"的执行者数（提示用；与列表是否过滤无关）。
- * ANY_CITY（看敌将情报）不涉及行动限制 → 直接返回候选总数。 */
+ * ANY_CITY / WILD_CITY 不涉及行动限制 → 直接返回候选总数。 */
 static int idle_workers(const S3GenPicker *p) {
     int all[S3_ROSTER_MAX];
     if (!p || !p->roster) return 0;
-    if (p->scope == S3_PICK_ANY_CITY) return list_workers(p, all, S3_ROSTER_MAX);
+    if (p->scope == S3_PICK_ANY_CITY || p->scope == S3_PICK_WILD_CITY)
+        return list_workers(p, all, S3_ROSTER_MAX);
     if (p->scope == S3_PICK_MY_ALL)
         return s3_roster_workers_mine_all(p->roster, 1, all, S3_ROSTER_MAX);
     return s3_roster_workers(p->roster, p->city, 1, all, S3_ROSTER_MAX);
+}
+
+/* 「挑执行者」的作用域（受"本月已行动"约束）：MY_CITY / MY_ALL。
+ * ANY_CITY（看情报）/ WILD_CITY（挑野将）不受限。 */
+static int acting_scope(const S3GenPicker *p) {
+    return p && (p->scope == S3_PICK_MY_CITY || p->scope == S3_PICK_MY_ALL);
 }
 
 /* 计算并缓存面板几何 + 当前页内容（render 与 hit 共用） */
@@ -155,9 +164,18 @@ void s3_picker_render(S3GenPicker *p, Sango3Canvas *cv) {
     else if (p->scope == S3_PICK_ANY_CITY)
         snprintf(buf, sizeof buf, "%s —— 選擇武將（%s · 共 %d 人）",
                  p->title, p->city, (int)p->n_total);
+    else if (p->scope == S3_PICK_WILD_CITY)
+        snprintf(buf, sizeof buf, "%s —— 選擇招攬對象（%s 在野 · 共 %d 人）",
+                 p->title, p->city, (int)p->n_total);
     else
         snprintf(buf, sizeof buf, "%s —— 選擇執行者（%s · 共 %d 人）",
                  p->title, p->city, (int)p->n_total);
+    /* 有武将但本月全部已行动：把提示**并进标题**。
+     * ⚠ 原先另画一行提示在首行位置，与第一行数据**叠字**（2026-09-27 实机截图发现）。 */
+    if (acting_scope(p) && p->n_total > 0 && idle_workers(p) == 0) {
+        const int n = (int)strlen(buf);
+        snprintf(buf + n, sizeof buf - n, " · 本月均已行動");
+    }
     p->draw_text(p->text_ud, cv, buf, p->px + 10 * z, p->py,
                  p->pw - 20 * z, BASE_TITLE_H * z, COL_TITLE, fnt, 0x4u);
 
@@ -173,7 +191,7 @@ void s3_picker_render(S3GenPicker *p, Sango3Canvas *cv) {
                      70 * z, BASE_HEAD_H * z, 0xB0C4E0u, fnt, 0x4u);
 
     /* 数据行 */
-    const int acting = (p->scope != S3_PICK_ANY_CITY);   /* 只有"挑执行者"才受行动限制 */
+    const int acting = acting_scope(p);
     for (int i = 0; i < PAGE_ROWS; ++i) {
         int32_t rx, ry, rw, rh;
         row_rect(p, i, &rx, &ry, &rw, &rh);
@@ -199,18 +217,18 @@ void s3_picker_render(S3GenPicker *p, Sango3Canvas *cv) {
         snprintf(buf, sizeof buf, "%d", o->level);
         p->draw_text(p->text_ud, cv, buf, rx + COL_LEVEL * z, ry, 44 * z, rh, rgb, fnt, 0x4u);
         p->draw_text(p->text_ud, cv,
-                     acting ? (o->acted ? "本月已行動" : "可執行") : "查看",
+                     acting ? (o->acted ? "本月已行動" : "可執行")
+                            : (p->scope == S3_PICK_WILD_CITY ? "在野" : "查看"),
                      rx + COL_STATE * z, ry, 90 * z, rh, rgb, fnt, 0x4u);
     }
     if (p->n_total == 0) {
-        p->draw_text(p->text_ud, cv, "此處暫無可選的武將/軍師",
+        p->draw_text(p->text_ud, cv,
+                     (p->scope == S3_PICK_WILD_CITY) ? "此城暫無在野武將"
+                                                     : "此處暫無可選的武將/軍師",
                      p->px + 12 * z, p->py + (BASE_TITLE_H + BASE_HEAD_H) * z,
                      p->pw - 24 * z, BASE_ROW_H * z, COL_DIM, fnt, 0x4u);
-    } else if (acting && idle_workers(p) == 0) {
-        /* 有武将但本月全部已行动：明确告知，避免看起来像"界面坏了" */
-        p->draw_text(p->text_ud, cv, "本月武將/軍師均已行動 —— 請下月再來（或長按返回）",
-                     p->px + 12 * z, p->py + (BASE_TITLE_H + BASE_HEAD_H) * z,
-                     p->pw - 24 * z, BASE_ROW_H * z, 0xD0A060u, fnt, 0x4u);
+    } else if (p->n_total > 0 && acting && idle_workers(p) == 0) {
+        /* 提示已并入标题（见上）—— 这里不再另画一行，避免与首行数据叠字 */
     }
 
     /* 页脚：上頁 / 下頁 / 取消 + 页码 */
@@ -269,8 +287,8 @@ int s3_picker_on_click(S3GenPicker *p, int32_t x, int32_t y,
         if (x >= rx && x < rx + rw && y >= ry && y < ry + rh) {
             const S3Officer *o = s3_roster_at(p->roster, p->idx[i]);
             if (!o) return 1;
-            /* 定稿 A2：挑执行者时，本月已行动者不可选；看情报（ANY_CITY）不受限 */
-            if (p->scope != S3_PICK_ANY_CITY && o->acted) return 1;
+            /* 定稿 A2：挑执行者时，本月已行动者不可选；看情报/挑野将（ANY/WILD）不受限 */
+            if (acting_scope(p) && o->acted) return 1;
             if (out_idx) *out_idx = p->idx[i];
             s3_picker_close(p);
             return 1;

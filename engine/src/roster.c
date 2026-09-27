@@ -143,16 +143,52 @@ int s3_officer_add_exp(S3Officer *o, int amount) {
 }
 
 /* 月度结算：给名册内**所有**武将发自动经验（定稿 M2；在野也涨，
- * 否则后期招到的野将永远是初始等级）。返回升级人数。 */
+ * 否则后期招到的野将永远是初始等级）。返回升级人数。
+ *
+ * **M4 等级差加速**（2026-09-27 用户裁定"采纳"）：
+ *   E = 非我方且非在野武将的平均等级（s3_roster_enemy_avg_level）；
+ *   d = E − 自身等级；我方武将 d ≥ S3_LEVELGAP_D1(8) → ×2、d ≥ S3_LEVELGAP_D2(15) → ×3（封顶）。
+ *   ⚠ **只给我方加乘**：实现注见复核表第〇节 —— 双向加速会互相抵消，且会让 AI 滚雪球。
+ * 返回升级人数（兼容旧调用）。 */
 int s3_roster_monthly_growth(S3Roster *r) {
+    return s3_roster_monthly_growth_ex(r, NULL);
+}
+
+int s3_roster_monthly_growth_ex(S3Roster *r, int *out_boosted) {
+    if (out_boosted) *out_boosted = 0;
     if (!r) return 0;
-    int ups = 0;
+    const int enemy_avg = s3_roster_enemy_avg_level(r);
+    int ups = 0, boosted = 0;
     for (int i = 0; i < r->n; ++i) {
         int got = monthly_exp_of(r->o[i].level);
         if (got <= 0) continue;
+        /* 等级差加速：只对我方非在野武将，且我方向后落后时生效 */
+        if (enemy_avg > 0 && r->o[i].mine && !r->o[i].wild) {
+            const int d = enemy_avg - r->o[i].level;
+            int mult = 1;
+            if (d >= S3_LEVELGAP_D2)      mult = S3_LEVELGAP_MULT_2;
+            else if (d >= S3_LEVELGAP_D1) mult = S3_LEVELGAP_MULT_1;
+            if (mult > 1) { got *= mult; ++boosted; }
+        }
         if (s3_officer_add_exp(&r->o[i], got) > 0) ups++;
     }
+    if (out_boosted) *out_boosted = boosted;
     return ups;
+}
+
+/* M4 用：**非我方且非在野**武将的平均等级（即"对手势力"的平均等级）。
+ * 无此类武将（例如全图只剩我方）→ 返回 0，调用方据此关闭加速。 */
+int s3_roster_enemy_avg_level(const S3Roster *r) {
+    if (!r) return 0;
+    long long sum = 0;
+    int cnt = 0;
+    for (int i = 0; i < r->n; ++i) {
+        const S3Officer *o = &r->o[i];
+        if (o->mine || o->wild) continue;      /* 只看他方在编武将 */
+        sum += o->level;
+        ++cnt;
+    }
+    return cnt > 0 ? (int)(sum / cnt) : 0;
 }
 
 void s3_roster_mark_city(S3Roster *r, const char *city, int mine) {
@@ -247,6 +283,33 @@ int s3_roster_officer_count_in_city(const S3Roster *r, const char *city) {
     for (int i = 0; i < r->n; ++i) {
         const S3Officer *o = &r->o[i];
         if (o->wild) continue;
+        if (strcmp(o->city, city)) continue;
+        ++k;
+    }
+    return k;
+}
+
+/* 某城中的**在野**武将（2026-09-27，B2 搜索招揽用）。
+ * 在野武将也有 city（`General02` 的 "城市,野"），故按城名筛即可。 */
+int s3_roster_wild_in_city(const S3Roster *r, const char *city,
+                           int *out, int out_max) {
+    if (!r || !city || !out || out_max <= 0) return 0;
+    int k = 0;
+    for (int i = 0; i < r->n && k < out_max; ++i) {
+        const S3Officer *o = &r->o[i];
+        if (!o->wild) continue;
+        if (strcmp(o->city, city)) continue;
+        out[k++] = i;
+    }
+    return k;
+}
+
+int s3_roster_wild_count_in_city(const S3Roster *r, const char *city) {
+    if (!r || !city) return 0;
+    int k = 0;
+    for (int i = 0; i < r->n; ++i) {
+        const S3Officer *o = &r->o[i];
+        if (!o->wild) continue;
         if (strcmp(o->city, city)) continue;
         ++k;
     }
@@ -404,6 +467,66 @@ int s3_personality_similarity(int a, int b) {
     if (d <= 49)  return 65;
     if (d <= 99)  return 40;
     return 15;
+}
+
+/* ============================================ 本批（2026-09-27）：招揽 / 離間
+ * 口径：`docs/P1剩余-忠诚变动·搜索招揽·離間_调研复核表.md`（用户逐行裁定）。
+ * 公式均标【待测】，先按当前值实现并留常量。 */
+
+/* X-3 搜索招揽**在野**武将成功率（%）。C10 裁决：只看执行者本人与野将的相性，
+ * **与君主是谁无关**（"这个人搜不来，就换一个相性近的人去搜"）。 */
+int s3_recruit_chance(const S3Officer *actor, const S3Officer *target) {
+    if (!actor || !target) return 0;
+    const int sim = s3_personality_similarity(actor->personality, target->personality);
+    int p = S3_RECRUIT_P_BASE + actor->intel / 5 + actor->level + (sim - 50) / 2;
+    if (p < S3_RECRUIT_P_MIN) p = S3_RECRUIT_P_MIN;
+    if (p > S3_RECRUIT_P_MAX) p = S3_RECRUIT_P_MAX;
+    return p;
+}
+
+/* 招揽成功 → 野将转我方。忠诚度**保持 = 义理**（不因"换主"重置为别的值；
+ * 定稿 O1 的初值口径在 add_ex 里已设，这里不动它）。 */
+int s3_officer_recruit(S3Officer *o, const char *new_city) {
+    if (!o || !o->wild) return 0;              /* 只有在野武将可被招揽 */
+    o->wild = 0;
+    o->mine = 1;
+    if (new_city && *new_city)
+        snprintf(o->city, sizeof o->city, "%.31s", new_city);
+    /* 转投后官位需按等级重授 → 置回未授勋，由 s3_roster_auto_titles() 补 */
+    o->rank_no = -1;
+    o->rank_name[0] = '\0';
+    o->rank_soldiers = 0;
+    return 1;
+}
+
+/* O-5 離間忠诚下降量（用户 2026-09-27 裁定采纳）：
+ *   Δ = round((100 − 義理)/10) + round(|相性差|/25)，钳 S3_ESTRANGE_MIN~MAX(1~20)。
+ * 义理越高越难降（关/赵/诸葛/周瑜 义理 100 → 只剩相性项 0~6，常为 1~2 点）。 */
+int s3_estrange_delta(const S3Officer *target, const S3Officer *actor) {
+    if (!target) return 0;
+    int d = 0;
+    if (actor) { d = target->personality - actor->personality; if (d < 0) d = -d; }
+    /* 四舍五入：把 +half 折进分子（整数除法） */
+    int delta = ((100 - target->justice) + S3_ESTRANGE_BASE_DIV / 2) / S3_ESTRANGE_BASE_DIV;
+    delta    += (d + S3_ESTRANGE_SIM_DIV / 2) / S3_ESTRANGE_SIM_DIV;
+    if (delta < S3_ESTRANGE_MIN) delta = S3_ESTRANGE_MIN;
+    if (delta > S3_ESTRANGE_MAX) delta = S3_ESTRANGE_MAX;
+    return delta;
+}
+
+/* F3 離間成功率（%）：
+ *   P = (|相性差| / 148) × 70 × (1 − 義理/100) × 威望系数(暂 1.0)，钳 0~90。
+ * 义理 100 的名将 → **恒 0%**（"高义理名将基本免疫"，符合甲口径）。
+ * 威望系数等 L4 数值（T15 威望系统）落地后再接 —— 现在固定 1.0。 */
+int s3_estrange_chance(const S3Officer *target, const S3Officer *actor) {
+    if (!target || !actor) return 0;
+    int d = target->personality - actor->personality; if (d < 0) d = -d;
+    if (d > S3_ESTRANGE_P_DIFF) d = S3_ESTRANGE_P_DIFF;
+    int p = (d * S3_ESTRANGE_P_SPAN) / S3_ESTRANGE_P_DIFF;   /* 相性项 0~70 */
+    p = p * (100 - target->justice) / 100;                   /* 义理衰减 */
+    if (p < 0) p = 0;
+    if (p > S3_ESTRANGE_P_MAX) p = S3_ESTRANGE_P_MAX;
+    return p;
 }
 
 /* ================================================== 装备加成 / 有效属性（2026-09-23）

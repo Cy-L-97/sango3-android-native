@@ -109,6 +109,26 @@
 #define BST_W  38
 #define BST_H  26
 
+/* ---------------------------------------------------- 赏赐（2026-09-27，定稿 O1/R4）
+ * ⚠ 「賞賜」按钮**放在顶栏右端、紧邻「名單」左侧**（x 486..532，资讯欄文字很短不会到这里）。
+ *   起初放在 選項（5 页签）正下方（x123,y298）—— 实测截图里它与页签列连成一片，
+ *   **看起来像第 6 个页签**（而且与「軍師技」那一格重叠 3px），故改到顶栏。 */
+#define GF_BTN_X   486
+#define GF_BTN_Y   8
+#define GF_BTN_W   46
+#define GF_BTN_H   18
+/* 赏赐列表（模态浮层，盖住 選項/子選單/部隊；点击一律归它）—— 高度**按行数动态算**
+ * （首版固定 252 高、3 件物品时下半屏是空的，且标题与列头挤在一行）。 */
+#define GF_X       150
+#define GF_Y       108
+#define GF_W       340
+#define GF_HDR_H   40          /* 标题 + 列头 */
+#define GF_ROW     26
+#define GF_ROWS    7           /* 最多显示 7 行（赏赐类共 5 种，够用） */
+#define GF_ROWS_Y  (GF_Y + GF_HDR_H)
+#define GF_CAN_W   72
+#define GF_PAD_BTM 38          /* 取消按钮 24 + 上下留白 */
+
 /* ---------------------------------------------------- 武将名单（PICK，自加） */
 #define PK_X   80
 #define PK_Y   50
@@ -189,6 +209,14 @@ struct S3OfficerUI {
     char last_name[32];
     int  last_sf, last_cost, last_failed;
 
+    /* --- 赏赐（2026-09-27） --- */
+    int  gift_open;                 /* 1 = 赏赐列表已展开（模态） */
+    int  gift_hover, gift_sel;      /* 列表悬停行 / 选中行 */
+    int  gift_confirm;              /* 1 = 赏赐确认中（訊息欄 + 是/否） */
+    S3GiftItem gift[32]; int n_gift;
+    S3OuiGiftListFn gift_list; S3OuiGiftDoFn gift_do; void *gift_ud;
+    char last_gift[32]; int last_gift_delta;
+
     /* 肖像 */
     ShpImage face;
     int  face_ok, face_no;
@@ -227,8 +255,34 @@ void s3_oui_set_log(S3OfficerUI *u, S3OuiLog fn, void *ud) {
     u->log = fn; u->log_ud = ud;
 }
 
+void s3_oui_set_gift(S3OfficerUI *u, S3OuiGiftListFn list, S3OuiGiftDoFn do_, void *ud) {
+    if (!u) return;
+    u->gift_list = list; u->gift_do = do_; u->gift_ud = ud;
+}
+
+const char *s3_oui_last_gift_name(const S3OfficerUI *u) { return u ? u->last_gift : ""; }
+int s3_oui_last_gift_delta(const S3OfficerUI *u) { return u ? u->last_gift_delta : 0; }
+
+/* 赏赐浮层高度（渲染/命中同一套算法，避免两处漂移） */
+static int gift_panel_h(const S3OfficerUI *u) {
+    int rows = u ? u->n_gift : 0;
+    if (rows <= 0) rows = 1;
+    if (rows > GF_ROWS) rows = GF_ROWS;
+    return GF_HDR_H + rows * GF_ROW + GF_PAD_BTM;
+}
+
+/* 重新取一次赏赐候选（数量会随赏赐变化 → 每次打开/成功都现取） */
+static void gift_reload(S3OfficerUI *u) {
+    u->n_gift = 0;
+    if (!u || !u->gift_list) return;
+    u->n_gift = u->gift_list(u->gift_ud, u->off, u->gift, 32);
+    if (u->n_gift < 0) u->n_gift = 0;
+    if (u->gift_sel >= u->n_gift) u->gift_sel = -1;
+}
+
 void s3_oui_close(S3OfficerUI *u) {
-    if (u) { u->mode = S3_OUI_NONE; u->hover = -1; u->pick_hover = -1; u->confirm = 0; }
+    if (u) { u->mode = S3_OUI_NONE; u->hover = -1; u->pick_hover = -1; u->confirm = 0;
+             u->gift_open = 0; u->gift_confirm = 0; }
 }
 int  s3_oui_active(const S3OfficerUI *u) { return u ? (u->mode != S3_OUI_NONE) : 0; }
 int  s3_oui_mode(const S3OfficerUI *u) { return u ? u->mode : S3_OUI_NONE; }
@@ -392,6 +446,8 @@ static void array_enter(S3OfficerUI *u, int off_idx) {
     u->filt = FILT_ALL;
     u->hover = -1;
     u->msg[0] = '\0';
+    u->gift_open = 0; u->gift_confirm = 0; u->gift_sel = -1; u->gift_hover = -1;
+    u->confirm = 0;
     u->mode = S3_OUI_ARRAY;
     const S3Officer *o = (u->roster && off_idx >= 0) ? s3_roster_at(u->roster, off_idx) : NULL;
     build_sa_names(u, o);
@@ -602,9 +658,13 @@ void s3_oui_render(S3OfficerUI *u, Sango3Canvas *cv) {
     for (int i = 0; i < 5; ++i)
         txt(u, cv, u->line[i], IF_X + 10, IF_Y + 6 + i * 22, IF_W - 20, 22, C_TEXT, 0);
 
-    /* 「名單」+ 9101/9102 ← → */
+    /* 「名單」+ 9101/9102 ← →  + 「賞賜」（2026-09-27，定稿 O1/R4） */
     rect(cv, LST_X, NAV_Y, LST_W, NAV_H, C_BTN);
     txt(u, cv, "名單", LST_X, NAV_Y, LST_W, NAV_H, C_TITLE, 1);
+    rect(cv, GF_BTN_X, GF_BTN_Y, GF_BTN_W, GF_BTN_H,
+         u->gift_open ? 90 : 45, u->gift_open ? 130 : 62, u->gift_open ? 200 : 112);
+    frame(cv, GF_BTN_X, GF_BTN_Y, GF_BTN_W, GF_BTN_H);
+    txt(u, cv, "賞賜", GF_BTN_X, GF_BTN_Y, GF_BTN_W, GF_BTN_H, C_TITLE, 1);
     rect(cv, NAV_X1, NAV_Y, NAV_W, NAV_H, C_BTN);
     rect(cv, NAV_X2, NAV_Y, NAV_W, NAV_H, C_BTN);
     txt(u, cv, "←", NAV_X1, NAV_Y, NAV_W, NAV_H, C_TEXT, 1);
@@ -646,6 +706,8 @@ void s3_oui_render(S3OfficerUI *u, Sango3Canvas *cv) {
         rect(cv, OPT_X + 6, by, OPT_W - 12, OPT_BH, on ? 45 : 26, on ? 62 : 30, on ? 112 : 46);
         txt(u, cv, tab_label(t), OPT_X + 6, by, OPT_W - 12, OPT_BH, on ? C_TITLE : C_TEXT, 1);
     }
+
+    /* 賞賜 按钮画在顶栏（见上方「名單」旁边），此处不再重复 */
 
     /* 9400 陣形（8 个小队）—— **必须画在技表之前**：原版 9500（学技大列表）是
      * 一个自右侧滑入的独立窗口，展开时要**盖住**右侧部队面板（2026-09-23 用户指正重叠）。 */
@@ -773,9 +835,41 @@ void s3_oui_render(S3OfficerUI *u, Sango3Canvas *cv) {
         }
     }
 
+    /* 赏赐列表（模态浮层；画在訊息欄/是·否 之前，让确认按钮压在最上层） */
+    if (u->gift_open) {
+        const int gh = gift_panel_h(u);
+        const int cy = GF_Y + gh - 30;
+        rect(cv, GF_X, GF_Y, GF_W, gh, C_BG);
+        frame(cv, GF_X, GF_Y, GF_W, gh);
+        txt(u, cv, "賞賜 —— 忠誠度上升（所在城物品）", GF_X + 10, GF_Y + 2, GF_W - 20,
+            20, C_TITLE, 0);
+        txt(u, cv, "物品", GF_X + 12, GF_Y + 22, 190, 16, C_DIM, 0);
+        txt(u, cv, "忠誠", GF_X + 210, GF_Y + 22, 50, 16, C_DIM, 0);
+        txt(u, cv, "現有", GF_X + 270, GF_Y + 22, 50, 16, C_DIM, 0);
+        if (u->n_gift == 0)
+            txt(u, cv, "（此城暫無賞賜類物品 —— 可在「內政 → 搜索」中獲得）",
+                GF_X + 10, GF_ROWS_Y, GF_W - 20, GF_ROW, C_DIM, 0);
+        for (int r = 0; r < GF_ROWS && r < u->n_gift; ++r) {
+            const int ry = GF_ROWS_Y + r * GF_ROW;
+            if (u->gift_hover == r) rect(cv, GF_X + 3, ry, GF_W - 6, GF_ROW - 2, C_ROW);
+            if (u->gift_sel == r)   rect(cv, GF_X + 3, ry, GF_W - 6, GF_ROW - 2, C_SEL);
+            char b[64];
+            snprintf(b, sizeof b, "%s", u->gift[r].name);
+            txt(u, cv, b, GF_X + 12, ry, 190, GF_ROW - 2,
+                u->gift_hover == r ? C_HOVER : C_TEXT, 0);
+            snprintf(b, sizeof b, "+%d", u->gift[r].loyalty_inc);
+            txt(u, cv, b, GF_X + 210, ry, 50, GF_ROW - 2, C_OK, 1);
+            snprintf(b, sizeof b, "%d", u->gift[r].qty);
+            txt(u, cv, b, GF_X + 270, ry, 50, GF_ROW - 2, C_TEXT, 1);
+        }
+        rect(cv, GF_X + GF_W - GF_CAN_W - 10, cy, GF_CAN_W, 24,
+             u->gift_hover == 100 ? C_HOVER : C_BTN);
+        txt(u, cv, "取消", GF_X + GF_W - GF_CAN_W - 10, cy, GF_CAN_W, 24, C_TEXT, 1);
+    }
+
     /* 9520 訊息欄 / 9531·9532 是否 */
     if (u->msg[0]) txt(u, cv, u->msg, MSG_X, MSG_Y, MSG_W, MSG_H, C_TITLE, 0);
-    if (u->confirm) {
+    if (u->confirm || u->gift_confirm) {
         rect(cv, YES_X, BST_Y, BST_W, BST_H, C_BTN);
         rect(cv, YES_X + 40, BST_Y, BST_W, BST_H, C_BTN);
         txt(u, cv, "是", YES_X, BST_Y, BST_W, BST_H, C_TEXT, 1);
@@ -804,6 +898,20 @@ void s3_oui_on_move(S3OfficerUI *u, int32_t x, int32_t y) {
         return;
     }
     if (u->mode != S3_OUI_ARRAY) return;
+    /* 赏赐列表展开时，悬停只归它（模态） */
+    if (u->gift_open && !u->gift_confirm) {
+        const int cy = GF_Y + gift_panel_h(u) - 30;
+        u->gift_hover = -1;
+        for (int r = 0; r < GF_ROWS && r < u->n_gift; ++r) {
+            if (inbox(x, y, GF_X + 3, GF_ROWS_Y + r * GF_ROW, GF_W - 6, GF_ROW - 2)) {
+                u->gift_hover = r; return;
+            }
+        }
+        if (inbox(x, y, GF_X + GF_W - GF_CAN_W - 10, cy, GF_CAN_W, 24)) {
+            u->gift_hover = 100; return;
+        }
+        return;
+    }
     u->hover = -1;
     const S3Officer *o = (u->roster && u->off >= 0) ? s3_roster_at(u->roster, u->off) : NULL;
     if (!o) return;
@@ -829,6 +937,9 @@ void s3_oui_on_move(S3OfficerUI *u, int32_t x, int32_t y) {
 int s3_oui_on_rclick(S3OfficerUI *u) {
     if (!u || u->mode == S3_OUI_NONE) return 0;
     if (u->mode == S3_OUI_ARRAY) {          /* 整备页 → 回名单（仍激活） */
+        /* 赏赐浮层优先：长按先收浮层，再退整备页（逐层退，与整体习惯一致） */
+        if (u->gift_confirm) { u->gift_confirm = 0; u->gift_sel = -1; return 1; }
+        if (u->gift_open)    { u->gift_open = 0; u->gift_sel = -1; u->gift_hover = -1; return 1; }
         s3_oui_open_pick(u, u->roster);
         return 1;
     }
@@ -871,6 +982,56 @@ int s3_oui_on_click(S3OfficerUI *u, int32_t x, int32_t y) {
     /* ---------------- 整备页 ---------------- */
     const S3Officer *o = (u->roster && u->off >= 0) ? s3_roster_at(u->roster, u->off) : NULL;
     if (!o) { s3_oui_close(u); return -2; }
+
+    /* ---- 赏赐确认（优先于学技确认）---- */
+    if (u->gift_confirm) {
+        if (inbox(x, y, YES_X, BST_Y, BST_W, BST_H)) {
+            S3Officer *om = s3_roster_mut(u->roster, u->off);
+            u->last_gift[0] = '\0'; u->last_gift_delta = 0;
+            if (om && u->gift_sel >= 0 && u->gift_sel < u->n_gift) {
+                const S3GiftItem *g = &u->gift[u->gift_sel];
+                /* 执行交给 app（扣物品库 + 加忠诚），返回本次忠诚增量 */
+                const int inc = u->gift_do ? u->gift_do(u->gift_ud, u->off, g->name) : 0;
+                if (inc > 0) {
+                    snprintf(u->last_gift, sizeof u->last_gift, "%s", g->name);
+                    u->last_gift_delta = inc;
+                    snprintf(u->msg, sizeof u->msg, "賞賜「%s」· 忠誠 +%d → %d",
+                             g->name, inc, om->loyalty);
+                    build_card(u, s3_roster_at(u->roster, u->off));   /* 資訊欄刷新忠诚 */
+                    u->gift_confirm = 0; u->gift_sel = -1;
+                    gift_reload(u);                                    /* 数量变了 */
+                    return 2;
+                }
+                snprintf(u->msg, sizeof u->msg, "賞賜失敗：「%s」已無庫存", g->name);
+                gift_reload(u);
+            }
+            u->gift_confirm = 0; u->gift_sel = -1;
+            return -3;
+        }
+        if (inbox(x, y, YES_X + 40, BST_Y, BST_W, BST_H)) {
+            u->gift_confirm = 0; u->gift_sel = -1;
+            snprintf(u->msg, sizeof u->msg, "已取消賞賜");
+            return -3;
+        }
+        return -3;
+    }
+
+    /* ---- 赏赐列表展开中（模态：其余点击一律吞掉）---- */
+    if (u->gift_open) {
+        for (int r = 0; r < GF_ROWS && r < u->n_gift; ++r) {
+            if (!inbox(x, y, GF_X + 3, GF_ROWS_Y + r * GF_ROW, GF_W - 6, GF_ROW - 2)) continue;
+            u->gift_sel = r; u->gift_confirm = 1;
+            snprintf(u->msg, sizeof u->msg, "賞賜「%s」給 %s？忠誠 +%d",
+                     u->gift[r].name, o->name, u->gift[r].loyalty_inc);
+            return -3;
+        }
+        if (inbox(x, y, GF_X + GF_W - GF_CAN_W - 10, GF_Y + gift_panel_h(u) - 30, GF_CAN_W, 24)) {
+            u->gift_open = 0; u->gift_sel = -1; u->gift_hover = -1;
+            snprintf(u->msg, sizeof u->msg, "已關閉賞賜");
+            return -3;
+        }
+        return -3;
+    }
 
     /* 是否确认框优先 */
     if (u->confirm) {
@@ -915,6 +1076,14 @@ int s3_oui_on_click(S3OfficerUI *u, int32_t x, int32_t y) {
     }
     if (inbox(x, y, NAV_X1, NAV_Y, NAV_W, NAV_H)) { step_officer(u, -1); return 0; }
     if (inbox(x, y, NAV_X2, NAV_Y, NAV_W, NAV_H)) { step_officer(u, +1); return 0; }
+
+    /* 「賞賜」按钮（2026-09-27，定稿 O1/R4）：列该将**所在城**的赏赐类物品 */
+    if (inbox(x, y, GF_BTN_X, GF_BTN_Y, GF_BTN_W, GF_BTN_H)) {
+        gift_reload(u);
+        u->gift_open = 1; u->gift_hover = -1; u->gift_sel = -1;
+        snprintf(u->msg, sizeof u->msg, "賞賜：請選擇物品（%d 種 · 忠誠 +4~+12）", u->n_gift);
+        return -3;
+    }
 
     /* 9301~9305 五页签 */
     for (int t = 0; t < TAB_COUNT; ++t) {

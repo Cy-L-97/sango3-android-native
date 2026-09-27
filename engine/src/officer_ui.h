@@ -43,6 +43,19 @@ typedef struct {
 
 typedef struct S3OfficerUI S3OfficerUI;
 
+/* ---------------- 赏赐（定稿 O1/R4，2026-09-27 新增） ----------------
+ * 数据源 = `Thing.ini` 的 `Type=6`（布匹 +4 / 玉器 +6 / 美女 +8 / 黃金 +10 / 珠寶 +12），
+ * 物品**从所在城的物品库扣**。本模块不认识物品库，故用两个回调把执行交给 app：
+ *   · list —— 把受赏武将所在城的**赏赐类库存**写进 out，返回条数（每次打开列表时现取，保证数量最新）
+ *   · do   —— 扣 1 件 + 加忠诚，返回本次忠诚增量（0 = 失败/无库存） */
+typedef struct { char name[32]; int loyalty_inc; int qty; } S3GiftItem;
+typedef int (*S3OuiGiftListFn)(void *ud, int off_idx, S3GiftItem *out, int out_max);
+typedef int (*S3OuiGiftDoFn)(void *ud, int off_idx, const char *item_name);
+void s3_oui_set_gift(S3OfficerUI *u, S3OuiGiftListFn list, S3OuiGiftDoFn do_,
+                     void *ud);
+const char *s3_oui_last_gift_name(const S3OfficerUI *u);
+int  s3_oui_last_gift_delta(const S3OfficerUI *u);
+
 typedef enum {
     S3_OUI_NONE  = 0,
     S3_OUI_CARD  = 1,     /* 武将信息块浮层（情報 用；点任意处关闭） */
@@ -78,7 +91,8 @@ int  s3_oui_off(const S3OfficerUI *u);
 void s3_oui_on_move(S3OfficerUI *u, int32_t x, int32_t y);
 /* 返回：-1 未处理 · -2 已关闭 · -3 已消费（切页签/切筛选/翻页/选中/取消确认）·
  *       0 当前武将变了（进入整备页 或 ←→ 换将；调用方刷新「君主」行）·
- *       1 = **学成了**（结果见 s3_oui_last_learn_*） */
+ *       1 = **学成了**（结果见 s3_oui_last_learn_*）·
+ *       2 = **赏赐成功**（结果见 s3_oui_last_gift_*） */
 int  s3_oui_on_click(S3OfficerUI *u, int32_t x, int32_t y);
 /* 长按/返回：整备页 → 回武将名单（返回 1，界面仍激活）；名单/信息块 → 关闭（返回 0）。
  * 对应原版的层级退出（用户 2026-09-23 之前的习惯是"长按退一层"）。 */

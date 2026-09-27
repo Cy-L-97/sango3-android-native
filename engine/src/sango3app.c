@@ -33,6 +33,7 @@
 #include "gen_picker.h"
 #include "officer_ui.h"
 #include "lord_picker.h"
+#include "itemstore.h"
 
 #include <SDL.h>
 #include <stdarg.h>
@@ -129,6 +130,11 @@ static int include_cb(const char *name, unsigned char **out_data, size_t *out_n,
 static S3Magic g_bf[160]; static int g_n_bf = 0;
 static S3Magic g_sf[32];  static int g_n_sf = 0;
 
+/* 最小物品库（2026-09-27）：城池级物品栈 —— 搜索入库、整备赏赐取用（定稿 O1/B2/R5）。
+ * 与名册一起声明在文件上部：`seed_gift_items()` / `gift_list_cb()` 等上文就要用。 */
+static S3ItemStore *g_store  = NULL;
+static S3Roster    *g_roster = NULL;        /* 武将名册（执行者 + 月度行动限制） */
+
 static void load_magic_pak(PakCtx *c, const char *path, const char *section,
                            S3Magic *arr, int cap, int *n_out) {
     uint32_t len = 0;
@@ -181,43 +187,117 @@ static S3AppTitle g_titles[96];  static int g_n_titles = 0;
 static char        g_form[8][32]; static int g_n_form = 0;      /* 阵形名 */
 static char        g_soldier[20][32], g_soldier_adv[20][32]; static int g_n_soldier = 0;
 
-/* 装备属性加成表（`Thing.ini`，2026-09-23）
- * 只收"会加属性"的两类：**武器 Type=2 → 武力**、**书 Type=3 → 智力**
- * （`Increment` 字段；Type=6 宝物的 Increment 是忠诚增量、Type=4 马是别的，均不计入学技门槛）。
- * 用途：学技的武/智区间门槛按**有效属性 = 基础 + 装备**判定（用户要求，原版行为）。 */
-typedef struct { char name[32]; int kind; int inc; } S3AppEquip;   /* kind: 1=武力 2=智力 */
-static S3AppEquip g_equip[128]; static int g_n_equip = 0;
+/* 物品表（`Thing.ini`，2026-09-23 建 → **2026-09-27 扩为全表**）
+ * 用途（一次解析，三处共用）：
+ *   ① **装备属性加成** —— 武器 `Type=2` 的 `Increment` → 武力、书 `Type=3` → 智力
+ *      （学技的武/智区间门槛按**有效属性 = 基础 + 装备**判定）；
+ *   ② **搜索入库**（定稿 R5）—— 按 `FindRate` 权重抽；**`FindRate = 0` 的稀有物永不出现**
+ *      （干將/莫邪/奧汀神槍/青釭劍/倚天劍/方天畫戟/丈八蛇矛/青龍偃月刀…）；
+ *   ③ **赏赐**（定稿 O1/R4）—— `Type=6`（布匹 4 / 玉器 6 / 美女 8 / 黃金 10 / 珠寶 12）
+ *      的 `Increment` = **忠诚增量**。
+ * ⚠ `Type=4`（马）的 `Increment` 是别的语义（部分写 [n,1,0]），**不当作属性/忠诚加成**。 */
+typedef struct {
+    char name[32];
+    int  type;
+    int  str_inc;       /* Type=2 武器 → 武力加成 */
+    int  int_inc;       /* Type=3 书   → 智力加成 */
+    int  loyalty_inc;   /* Type=6 赏赐 → 忠诚增量 */
+    int  find_rate;     /* Thing.ini FindRate：搜索可发现率（0 = 搜不到） */
+    int  attraction;    /* Thing.ini Attraction：宝物价值（外交赠礼，D 区用） */
+} S3AppItem;
+static S3AppItem g_items[256]; static int g_n_items = 0;
 
-static void load_equip_table_pak(PakCtx *c) {
+static void load_item_table_pak(PakCtx *c) {
     uint32_t len = 0; uint8_t *d = pak_get(c, "Setting\\Thing.ini", &len);
     if (!d) return;
     S3Ini *ini = s3_ini_parse_inc(d, len, include_cb, c); free(d);
     if (!ini) return;
     int n = 0;
-    for (int i = 0; i < ini->n_sections && n < 128; ++i) {
+    for (int i = 0; i < ini->n_sections && n < 256; ++i) {
         const S3IniSection *s = &ini->sections[i];
         if (!s->name || strcmp(s->name, "ITEM") != 0) continue;
         const char *nm = s3_ini_str(s, "Name", "");
         if (!nm || !*nm) continue;
-        const int ty = s3_ini_int(s, "Type", 0);
-        const int kind = (ty == 2) ? 1 : (ty == 3) ? 2 : 0;
-        if (!kind) continue;
+        const int ty  = s3_ini_int(s, "Type", 0);
         const int inc = s3_ini_int(s, "Increment", 0);
-        if (inc <= 0) continue;
-        snprintf(g_equip[n].name, sizeof g_equip[n].name, "%.31s", nm);
-        g_equip[n].kind = kind; g_equip[n].inc = inc;
+        snprintf(g_items[n].name, sizeof g_items[n].name, "%.31s", nm);
+        g_items[n].type        = ty;
+        g_items[n].str_inc     = (ty == 2 && inc > 0) ? inc : 0;
+        g_items[n].int_inc     = (ty == 3 && inc > 0) ? inc : 0;
+        g_items[n].loyalty_inc = (ty == 6 && inc > 0) ? inc : 0;
+        g_items[n].find_rate   = s3_ini_int(s, "FindRate", 0);
+        g_items[n].attraction  = s3_ini_int(s, "Attraction", 0);
         ++n;
     }
     s3_ini_free(ini);
-    g_n_equip = n;
+    g_n_items = n;
 }
 
+/* 装备加成查询（kind: 1 = 武器→武力 · 2 = 书→智力），保留原签名供 apply_equip_bonus 用 */
 static int equip_bonus_of(const char *item_name, int kind) {
     if (!item_name || !*item_name) return 0;
-    for (int i = 0; i < g_n_equip; ++i)
-        if (g_equip[i].kind == kind && strcmp(g_equip[i].name, item_name) == 0)
-            return g_equip[i].inc;
+    for (int i = 0; i < g_n_items; ++i) {
+        if (strcmp(g_items[i].name, item_name)) continue;
+        return (kind == 1) ? g_items[i].str_inc : g_items[i].int_inc;
+    }
     return 0;
+}
+
+/* 赏赐类物品的忠诚增量（Type=6；0 = 该物品不是赏赐类） */
+static int item_loyalty_inc(const char *item_name) {
+    if (!item_name || !*item_name) return 0;
+    for (int i = 0; i < g_n_items; ++i)
+        if (!strcmp(g_items[i].name, item_name)) return g_items[i].loyalty_inc;
+    return 0;
+}
+
+/* 搜索「物品」分支：按 `FindRate` 权重随机抽一件可搜到的物品（0 = 这一次没搜到）。
+ * 权重池 = 全部 `FindRate > 0` 的物品（兵符/阵法书/马/武器/书/宝物/赏赐/药草都算）。 */
+static const S3AppItem *search_roll_item(void) {
+    long long tot = 0;
+    for (int i = 0; i < g_n_items; ++i) tot += g_items[i].find_rate;
+    if (tot <= 0) return NULL;
+    long long r = rand() % tot;                 /* tot ≈ 3900 < RAND_MAX，够用 */
+    for (int i = 0; i < g_n_items; ++i) {
+        if (g_items[i].find_rate <= 0) continue;
+        r -= g_items[i].find_rate;
+        if (r < 0) return &g_items[i];
+    }
+    return NULL;
+}
+
+/* ---------------- 赏赐（定稿 O1/R4，2026-09-27）：officer_ui 的两个回调 ----------------
+ * 模块不吃物品库，只回传"要赏谁 + 赏什么"，扣库与加忠诚都在这里做。 */
+static int gift_list_cb(void *ud, int off_idx, S3GiftItem *out, int out_max) {
+    (void)ud;
+    if (!g_store || !g_roster || !out || out_max <= 0) return 0;
+    const S3Officer *o = s3_roster_at(g_roster, off_idx);
+    if (!o) return 0;
+    int k = 0;
+    for (int i = 0; i < g_n_items && k < out_max; ++i) {
+        if (g_items[i].loyalty_inc <= 0) continue;              /* 只看 Type=6 赏赐类 */
+        const int q = s3_store_count(g_store, o->city, g_items[i].name);
+        if (q <= 0) continue;                                   /* 该城没有这件 */
+        snprintf(out[k].name, sizeof out[k].name, "%.31s", g_items[i].name);
+        out[k].loyalty_inc = g_items[i].loyalty_inc;
+        out[k].qty = q;
+        ++k;
+    }
+    return k;
+}
+
+static int gift_do_cb(void *ud, int off_idx, const char *item_name) {
+    (void)ud;
+    if (!g_store || !g_roster || !item_name) return 0;
+    S3Officer *o = s3_roster_mut(g_roster, off_idx);
+    if (!o) return 0;
+    const int inc = item_loyalty_inc(item_name);                 /* Thing.ini Type=6 的 Increment */
+    if (inc <= 0) return 0;
+    if (!s3_store_take(g_store, o->city, item_name, 1)) return 0; /* 库存不足 → 不改动 */
+    s3_officer_add_loyalty(o, inc);
+    printf("gift: %s 忠誠 +%d -> %d (%s)\n", o->name, inc, o->loyalty, item_name);
+    ALOG("gift: %s 忠誠 +%d -> %d (%s)", o->name, inc, o->loyalty, item_name);
+    return inc;
 }
 
 /* 给全名册算一次装备加成（开局装备来自 General01 的 Weapon/Book/Horse） */
@@ -292,11 +372,11 @@ static void load_aux_tables_from_pak(PakCtx *c) {
     load_titles_pak(c);
     load_forms_pak(c);
     load_soldiers_pak(c);
-    load_equip_table_pak(c);
-    printf("aux tables: titles=%d forms=%d soldiers=%d equip=%d\n",
-           g_n_titles, g_n_form, g_n_soldier, g_n_equip);
-    ALOG("aux tables: titles=%d forms=%d soldiers=%d equip=%d",
-         g_n_titles, g_n_form, g_n_soldier, g_n_equip);
+    load_item_table_pak(c);
+    printf("aux tables: titles=%d forms=%d soldiers=%d items=%d\n",
+           g_n_titles, g_n_form, g_n_soldier, g_n_items);
+    ALOG("aux tables: titles=%d forms=%d soldiers=%d items=%d",
+         g_n_titles, g_n_form, g_n_soldier, g_n_items);
 }
 
 /* 肖像探针（2026-09-23 诊断）：整备页左上角一直只显示姓名，需确认是"取不到"还是"解不开"。
@@ -598,6 +678,26 @@ static const CityBest *cb_get(const CityBest *a, int cap, const char *city) {
     return NULL;
 }
 
+/* 开局给我方城塞几件**赏赐类**物品（2026-09-27，最小物品库的验收前置）。
+ * 依据：`Thing.ini` 的 `Type=6`（布匹 +4 / 玉器 +6 / 美女 +8）—— 原版这些是搜到/买到的，
+ * 我们首版没有交易系统，故开局给一点，让「整备 → 賞賜」有东西可用（属**首版简化**，写进文档）。 */
+static void seed_gift_items(S3Strategy *st) {
+    static const char *GIFTS[] = { "布匹", "布匹", "玉器", "美女" };
+    if (!st || !g_store) return;
+    int n_city = 0, n_item = 0;
+    for (int i = 0; i < s3_strategy_count(st); ++i) {
+        if (!s3_strategy_city_mine(st, i)) continue;
+        const char *cn = s3_strategy_city_name(st, i);
+        if (!cn) continue;
+        ++n_city;
+        for (size_t k = 0; k < sizeof GIFTS / sizeof GIFTS[0]; ++k) {
+            if (s3_store_add(g_store, cn, GIFTS[k], 1) == 0) ++n_item;
+        }
+    }
+    printf("item store seed: %d cities, %d gift items\n", n_city, n_item);
+    ALOG("item store seed: %d cities, %d gift items", n_city, n_item);
+}
+
 static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
                        const char *my_lord, S3Roster *roster) {
     uint32_t len = 0;
@@ -882,6 +982,8 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
         /* 装备加成（武器→武力 / 书→智力）—— 学技门槛用"有效属性"判定 */
         apply_equip_bonus(roster);
     }
+    /* 最小物品库（2026-09-27）：给我方城塞几件赏赐类物品，供「整备 → 賞賜」验收 */
+    seed_gift_items(st);
     printf("strategy: %d cities (%d mine)\n", n, n_mine);
     ALOG("strategy: %d cities (%d mine)", n, n_mine);
     /* 数据层抽样日志（实机 logcat / PC 控制台可直接核对面板九行取值 + 插旗旗号） */
@@ -952,6 +1054,17 @@ static int          g_pending_city = -1;    /* 已选定、正在挑执行者的
  *   g_pending_enemy —— 目标必须是**非我方**城池（計略 調查/情報）
  *   g_pending_query —— 选完武将只**展示情报**，不执行、不消耗月度行动（定稿 F2） */
 static int          g_pending_enemy = 0, g_pending_query = 0;
+/* 命令阶段的第三个修饰位（2026-09-27，定稿 B2 搜索招揽）：
+ *   g_pending_recruit —— 选择器是"挑招揽对象"（在野武将）；g_recruit_actor = 发起搜索的武将下标。
+ *   命中后做 s3_recruit_chance() 判定，成功即把野将转我方。 */
+static int          g_pending_recruit = 0, g_recruit_actor = -1;
+/* 招揽时的目标城名 —— 在"搜索命中人才"那一刻就抄下来（比事后拿 g_pending_city 去查稳，
+ * 实测出现过提示里城名取成 "?" 的情况）。 */
+static char         g_recruit_city[64] = "";
+/* 定稿 F3 離間（2026-09-27）：**两级选择** —— 与 Text.ini 7048/7049 一致
+ *   （「請選擇要離間的武將」→「請選擇要執行離間的武將」）。
+ *   g_pending_estrange: 0 = 未启用 · 1 = 已选城、待选目标武将 · 2 = 已选目标、待选执行者 */
+static int          g_pending_estrange = 0, g_estrange_target = -1;
 
 /* 大地图的按压/拖动状态（原为函数内 static，2026-09-17 提到文件作用域）。
  * ⚠ **必须在视图切换时复位**：长按（=右键）会先产生一次 lclick 边沿 → drag=1，
@@ -961,7 +1074,6 @@ static int          g_pending_enemy = 0, g_pending_query = 0;
  * 对策：切换视图的边沿统一清零。 */
 static int     g_map_drag = 0, g_map_moved = 0, g_map_menu = 0;
 static int32_t g_map_px = -1, g_map_py = -1;
-static S3Roster    *g_roster = NULL;        /* 武将名册（执行者 + 月度行动限制） */
 static S3GenPicker *g_picker = NULL;        /* 执行者选择界面 */
 /* P1（2026-09-22）/ 整备界面（2026-09-23）：武将信息块 + 原版全屏 ARRAY 界面 */
 static S3OfficerUI *g_oui = NULL;
@@ -1045,12 +1157,52 @@ static void admin_execute_pending(int idx, int off_idx) {
             case 0: { int gain = 100 + rand() % 200;
                       cd->money += gain;
                       admin_say("%s「搜索」：%s（智%d 級%d）發現金錢 +%d", cname, who_i, iq, lv, gain); } break;
-            case 1:
-                admin_say("%s「搜索」：%s（智%d 級%d）發現在野人才（招募需相性，未開放）",
-                          cname, who_i, iq, lv); break;
-            default:
-                admin_say("%s「搜索」：%s（智%d 級%d）發現物品（已入庫，配裝未開放）",
-                          cname, who_i, iq, lv); break;
+            case 1: {
+                /* 定稿 B2 / C10（2026-09-27 落地）：发现人才 → **招揽判定看执行者本人与野将的相性**
+                 * （**与君主是谁无关**）→ 先列该城在野武将，玩家挑一名，再算成功率。
+                 * C11：相性/义理是隐藏属性，列表**不展示**，只给"在野"状态。 */
+                const int nw = s3_roster_wild_count_in_city(g_roster, cname);
+                if (!om || nw <= 0) {
+                    admin_say("%s「搜索」：%s（智%d 級%d）聽聞有人才，卻遍尋不著", cname, who_i, iq, lv);
+                } else {
+                    om->acted = 1;                  /* 定稿 A2：本条指令已执行（下面 return，不走函数末尾） */
+                    g_recruit_actor   = off_idx;
+                    g_pending_recruit = 1;
+                    g_pending_city    = idx;
+                    snprintf(g_recruit_city, sizeof g_recruit_city, "%.63s", cname);
+                    s3_picker_open(g_picker, g_roster, cname, "搜索", 0, S3_PICK_WILD_CITY);
+                    admin_say("%s「搜索」：%s（智%d 級%d）發現 %d 名在野人才 —— 請選擇招攬對象",
+                              cname, who_i, iq, lv, nw);
+                    {
+                        char b[168];
+                        snprintf(b, sizeof b,
+                                 "「搜索」：%s 在野 %d 人 —— 請選擇招攬對象（長按返回朝堂）",
+                                 cname, nw);
+                        s3_strategy_set_banner(g_ast, b);
+                    }
+                    printf("search recruit open: city=%s n=%d actor=%s\n", cname, nw, who_i);
+                    ALOG("search recruit open: city=%s n=%d actor=%s", cname, nw, who_i);
+                    return;                         /* acted 已置，不再走函数末尾 */
+                }
+            } break;
+            default: {
+                /* 定稿 R5（2026-09-27 落地）：**真的入库** —— 按 `FindRate` 权重抽一件；
+                 * `FindRate = 0` 的稀有物（干將/莫邪/奧汀神槍…）**永不出现**。 */
+                const S3AppItem *it = search_roll_item();
+                if (it && g_store) {
+                    s3_store_add(g_store, cname, it->name, 1);
+                    admin_say("%s「搜索」：%s（智%d 級%d）發現「%s」已入庫（%s 現有 %d）",
+                              cname, who_i, iq, lv, it->name, cname,
+                              s3_store_count(g_store, cname, it->name));
+                    printf("item store: %s +%s (now %d)\n", cname, it->name,
+                           s3_store_count(g_store, cname, it->name));
+                    ALOG("item store: %s +%s (now %d)", cname, it->name,
+                         s3_store_count(g_store, cname, it->name));
+                } else {
+                    admin_say("%s「搜索」：%s（智%d 級%d）似乎有所發現，卻仍一無所獲",
+                              cname, who_i, iq, lv);
+                }
+            } break;
             }
         } else {
             admin_say("%s「搜索」：%s（智%d 級%d）一無所獲", cname, who_i, iq, lv);
@@ -1096,6 +1248,8 @@ static void admin_cancel_pending(void) {
     g_pending_group = g_pending_item = -1;
     g_pending_label[0] = '\0';
     g_pending_enemy = g_pending_query = 0;
+    g_pending_recruit = 0; g_recruit_actor = -1;
+    g_pending_estrange = 0; g_estrange_target = -1;
     s3_strategy_set_banner(g_ast, "");
     s3_admin_set_visible(g_adm, 1);
     s3_admin_collapse(g_adm);       /* 回朝堂时子选单必须是收起态（2026-09-22 用户实测指正） */
@@ -1143,6 +1297,8 @@ static int admin_set_pending_x(int group, int item, const char *label,
     g_pending_group = group; g_pending_item = item;
     g_pending_enemy = want_enemy ? 1 : 0;
     g_pending_query = query ? 1 : 0;
+    g_pending_recruit = 0; g_recruit_actor = -1;
+    g_pending_estrange = 0; g_estrange_target = -1;
     snprintf(g_pending_label, sizeof g_pending_label, "%s", label);
     g_admin_map = 1;
     s3_admin_set_visible(g_adm, 0);          /* 收起菜单 */
@@ -1192,8 +1348,17 @@ static int admin_cmd_cb(void *ud, int group, int item, const char *label) {
         }
         ++g_month;
         s3_strategy_set_month(g_ast, g_month);
-        /* 定稿 M2/M3：月度自动经验 + 自动升级（A1 比例制）—— 需求①「我方将领自动升级」 */
-        int ups = g_roster ? s3_roster_monthly_growth(g_roster) : 0;
+        /* 定稿 M2/M3：月度自动经验 + 自动升级（A1 比例制）—— 需求①「我方将领自动升级」
+         * 定稿 M4（2026-09-27 落地）：等级差加速 —— 我方向后落后时月经验 ×2/×3。 */
+        int boosted = 0;
+        int ups = g_roster ? s3_roster_monthly_growth_ex(g_roster, &boosted) : 0;
+        if (g_roster) {
+            const int eavg = s3_roster_enemy_avg_level(g_roster);
+            printf("exp levelgap: E=%d difficulty=%d%% boosted=%d officers\n",
+                   eavg, s3_roster_exp_difficulty(), boosted);
+            ALOG("exp levelgap: E=%d difficulty=%d%% boosted=%d officers",
+                 eavg, s3_roster_exp_difficulty(), boosted);
+        }
         /* 等级变了 → 官位重授（用户 2026-09-23："官位按等级自动授勋"） */
         if (g_roster && ups > 0) apply_titles(g_roster);
         if (g_roster) s3_roster_end_turn(g_roster);   /* 定稿 A2：回合结束清空"本月已行动" */
@@ -1236,8 +1401,11 @@ static int admin_cmd_cb(void *ud, int group, int item, const char *label) {
      * 離間 = 尚未实现 */
     if (group == 4) {
         if (item == 0) return admin_set_pending_x(4, 0, label, 1, 0);   /* 調查 */
+        /* 定稿 F3：離間 —— 与調査同一入口（选**非我方**城），但后续是**两级选择**
+         * （目标武将 → 执行者），且**前提是该城在調查有效期内** */
+        if (item == 1) return admin_set_pending_x(4, 1, label, 1, 0);   /* 離間 */
         if (item == 2) return admin_set_pending_x(4, 2, label, 1, 1);   /* 情報 */
-        return 0;                                                       /* 離間 */
+        return 0;
     }
 
     /* ---- 需要城池 + 执行者的命令 → 挂起，切大地图选城（原版指令流） ----
@@ -1759,6 +1927,10 @@ int main(int argc, char **argv) {
              * 两条路都让 s3_roster_workers() 返回 0 → 执行者选择窗永远为空。 */
             if (!g_roster) g_roster = s3_roster_new();
             else           s3_roster_clear(g_roster);      /* 重开局 → 名册重建 */
+            /* 最小物品库（2026-09-27）：同样要在 load_cities 之前清空 ——
+             * 开局给每座**我方城**塞几件赏赐类物品（见下方 seed_gift_items） */
+            if (!g_store) g_store = s3_store_new();
+            else          s3_store_clear(g_store);
             if (kd) {
                 int sid = s3_kingdom_scenario(kd);
                 int si  = s3_kingdom_selected(kd);
@@ -1844,12 +2016,15 @@ int main(int argc, char **argv) {
                 tabs.sf = g_sf; tabs.n_sf = g_n_sf;
                 s3_oui_set_tables(g_oui, &tabs);
                 s3_oui_set_log(g_oui, oui_log_cb, NULL);
+                /* 赏赐（2026-09-27）：把"所在城物品库 + Type=6 忠诚增量"接进整备页 */
+                s3_oui_set_gift(g_oui, gift_list_cb, gift_do_cb, NULL);
             }
             /* 名册的 new/clear 已提前到 load_cities 之前（BUG-1） */
             g_ast = st; g_kd = kd; g_start_path = start_path; g_admin_quit = 0;
             g_pending_group = g_pending_item = -1; g_pending_label[0] = '\0';
             g_pending_city = -1;
             g_pending_enemy = g_pending_query = 0;
+            g_pending_recruit = 0; g_recruit_actor = -1;
             s3_strategy_set_banner(st, "");     /* 清掉"选君主"界面的残留文案 */
             s3_picker_close(g_picker);
             s3_admin_set_origin(g_adm, 45 * 2, 36 * 2);
@@ -1969,7 +2144,7 @@ int main(int argc, char **argv) {
                             const int off = s3_oui_off(g_oui);
                             const S3Officer *o = (off >= 0) ? s3_roster_at(g_roster, off) : NULL;
                             s3_oui_set_lord(g_oui, o ? admin_city_lord_name(o->city) : NULL);
-                        } else if (r >= 1 && s3_oui_last_learn_name(g_oui)[0]) {
+                        } else if (r == 1 && s3_oui_last_learn_name(g_oui)[0]) {
                             admin_say("獲得%s %s（功勳 -%d）",
                                       s3_oui_last_learn_is_sf(g_oui) ? "軍師技" : "武將技",
                                       s3_oui_last_learn_name(g_oui),
@@ -1983,6 +2158,17 @@ int main(int argc, char **argv) {
                                  s3_oui_last_learn_name(g_oui),
                                  s3_oui_last_learn_is_sf(g_oui) ? "SF" : "BF",
                                  s3_oui_last_learn_cost(g_oui));
+                        } else if (r == 2 && s3_oui_last_gift_name(g_oui)[0]) {
+                            /* 赏赐成功（2026-09-27，定稿 O1/R4）—— app 侧已扣库加忠诚，这里只播报 */
+                            const int off = s3_oui_off(g_oui);
+                            const S3Officer *go = (off >= 0) ? s3_roster_at(g_roster, off) : NULL;
+                            admin_say("賞賜「%s」給 %s · 忠誠 +%d → %d",
+                                      s3_oui_last_gift_name(g_oui), go ? go->name : "?",
+                                      s3_oui_last_gift_delta(g_oui), go ? go->loyalty : 0);
+                            printf("gift: %s <- %s (+%d)\n", go ? go->name : "?",
+                                   s3_oui_last_gift_name(g_oui), s3_oui_last_gift_delta(g_oui));
+                            ALOG("gift: %s <- %s (+%d)", go ? go->name : "?",
+                                 s3_oui_last_gift_name(g_oui), s3_oui_last_gift_delta(g_oui));
                         }
                     }
                 }
@@ -2000,11 +2186,22 @@ int main(int argc, char **argv) {
                 static int pk_down = 0;
                 static int32_t pk_x = -1, pk_y = -1;
                 s3_picker_on_move(g_picker, pt_ux, pt_uy);
-                if (pt.rclick) {                        /* 长按/返回 = 取消本次命令 */
+                if (pt.rclick) {                        /* 长按/返回：離間两级时退一级，否则取消命令 */
                     pk_down = 0;                        /* 长按抬起不再算点击 */
-                    s3_picker_close(g_picker);
-                    admin_cancel_pending();
-                    mode = 5;
+                    if (g_pending_estrange == 2) {
+                        /* 定稿 F3：从"选执行者"退回"选目标武将"（不结束命令阶段） */
+                        const char *cn = s3_strategy_city_name(g_ast, g_pending_city);
+                        g_pending_estrange = 1; g_estrange_target = -1;
+                        s3_picker_open(g_picker, g_roster, cn, "離間·目標", 0, S3_PICK_ANY_CITY);
+                        char b[168];
+                        snprintf(b, sizeof b, "「離間」① 請選擇要離間的武將（%s）", cn ? cn : "?");
+                        s3_strategy_set_banner(g_ast, b);
+                    } else {
+                        s3_picker_close(g_picker);
+                        g_pending_estrange = 0; g_estrange_target = -1;
+                        admin_cancel_pending();
+                        mode = 5;
+                    }
                 } else {
                     int off = -1, cancel = 0;
                     if (pt.lclick) { pk_down = 1; pk_x = pt_ux; pk_y = pt_uy; }
@@ -2020,6 +2217,92 @@ int main(int argc, char **argv) {
                                 snprintf(b, sizeof b,
                                          "「情報」：已查看，可繼續點選其它城池（長按返回朝堂）");
                                 s3_strategy_set_banner(g_ast, b);
+                            } else if (g_pending_recruit) {
+                                /* 定稿 B2（2026-09-27）：招揽判定 —— 与**执行者本人**的相性挂钩
+                                 * （C10：与君主是谁无关）。成功则野将转我方。 */
+                                S3Officer *actor = (g_recruit_actor >= 0)
+                                                 ? s3_roster_mut(g_roster, g_recruit_actor) : NULL;
+                                S3Officer *tgt   = s3_roster_mut(g_roster, off);
+                                const char *cn   = g_recruit_city[0] ? g_recruit_city : NULL;
+                                if (actor && tgt) {
+                                    const int sim  = s3_personality_similarity(actor->personality,
+                                                                               tgt->personality);
+                                    const int prob = s3_recruit_chance(actor, tgt);
+                                    if (tgt->wild && (rand() % 100) < prob) {
+                                        s3_officer_recruit(tgt, cn);
+                                        apply_titles(g_roster);   /* 转投后按等级重授官位 */
+                                        admin_say("招攬成功：%s 投效我方（%s）· 相性 %d%%（%s 執行）",
+                                                  tgt->name, cn ? cn : "?", prob, actor->name);
+                                        printf("search recruit: %s sim=%d P=%d%% -> OK\n",
+                                               tgt->name, sim, prob);
+                                        ALOG("search recruit: %s sim=%d P=%d%% -> OK",
+                                             tgt->name, sim, prob);
+                                    } else {
+                                        admin_say("招攬失敗：%s 不相為謀 · 相性 %d%%（換個相性近的人再試）",
+                                                  tgt->name, prob);
+                                        printf("search recruit: %s sim=%d P=%d%% -> FAIL\n",
+                                               tgt->name, sim, prob);
+                                        ALOG("search recruit: %s sim=%d P=%d%% -> FAIL",
+                                             tgt->name, sim, prob);
+                                    }
+                                }
+                                g_pending_recruit = 0; g_recruit_actor = -1;
+                                g_recruit_city[0] = '\0';
+                                g_pending_city = -1;
+                                char b[168];
+                                snprintf(b, sizeof b,
+                                         "「搜索」：已執行，可繼續點選其它城池（長按返回朝堂）");
+                                s3_strategy_set_banner(g_ast, b);
+                            } else if (g_pending_estrange == 1) {
+                                /* 定稿 F3 第二级：已选目标武将 → 选**执行者**（我方全軍任選）
+                                 * （与 Text.ini 7049「請選擇要執行離間的武將」一致） */
+                                g_estrange_target  = off;
+                                g_pending_estrange = 2;
+                                s3_picker_open(g_picker, g_roster, NULL, "離間·執行",
+                                               0, S3_PICK_MY_ALL);
+                                char b[168];
+                                snprintf(b, sizeof b,
+                                         "「離間」② 請選擇執行離間的武將（我方全軍 · 目標 %s）",
+                                         s3_roster_at(g_roster, off) ? s3_roster_at(g_roster, off)->name : "?");
+                                s3_strategy_set_banner(g_ast, b);
+                                printf("picker open(estrange actor): target=%s\n",
+                                       s3_roster_at(g_roster, off) ? s3_roster_at(g_roster, off)->name : "?");
+                                ALOG("picker open(estrange actor): target=%s",
+                                     s3_roster_at(g_roster, off) ? s3_roster_at(g_roster, off)->name : "?");
+                            } else if (g_pending_estrange == 2) {
+                                /* 定稿 F3 判定：成功率 = (|相性差|/148)×70×(1−义理/100)；
+                                 * 成功则目标忠诚 −Δ（Δ 见 O-5）。**不论成败都消耗执行者月度行动**
+                                 * （用户 2026-09-27 裁定）。义理 100 的名将成功率恒 0（免疫）。 */
+                                S3Officer *tgt   = s3_roster_mut(g_roster, g_estrange_target);
+                                S3Officer *actor = s3_roster_mut(g_roster, off);
+                                if (tgt && actor) {
+                                    const int prob  = s3_estrange_chance(tgt, actor);
+                                    const int delta = s3_estrange_delta(tgt, actor);
+                                    if (prob > 0 && (rand() % 100) < prob) {
+                                        const int before = tgt->loyalty;
+                                        s3_officer_add_loyalty(tgt, -delta);
+                                        admin_say("離間成功：%s 忠誠 %d → %d（−%d）· 成功率 %d%%（%s 執行）",
+                                                  tgt->name, before, tgt->loyalty, delta, prob, actor->name);
+                                        printf("estrange: %s 忠誠 %d -> %d (Δ=%d, P=%d%%) OK\n",
+                                               tgt->name, before, tgt->loyalty, delta, prob);
+                                        ALOG("estrange: %s 忠誠 %d -> %d (Δ=%d, P=%d%%) OK",
+                                             tgt->name, before, tgt->loyalty, delta, prob);
+                                    } else {
+                                        admin_say("離間失敗：%s 不為所動 · 成功率 %d%%（%s 本月已行動）",
+                                                  tgt->name, prob, actor->name);
+                                        printf("estrange: %s 忠誠 %d (Δ=%d, P=%d%%) FAIL\n",
+                                               tgt->name, tgt->loyalty, delta, prob);
+                                        ALOG("estrange: %s 忠誠 %d (Δ=%d, P=%d%%) FAIL",
+                                             tgt->name, tgt->loyalty, delta, prob);
+                                    }
+                                    actor->acted = 1;   /* 用户裁定：離間消耗月度行动 */
+                                }
+                                g_pending_estrange = 0; g_estrange_target = -1;
+                                g_pending_city = -1;
+                                char b[168];
+                                snprintf(b, sizeof b,
+                                         "「離間」：已執行，可繼續點選其它城池（長按返回朝堂）");
+                                s3_strategy_set_banner(g_ast, b);
                             } else if (g_pending_group == 1 && g_pending_item == 3) {
                                 /* 整備已改走全屏界面（不走选城流程）→ 此处保留兜底 */
                                 s3_picker_close(g_picker);
@@ -2034,8 +2317,19 @@ int main(int argc, char **argv) {
                             }
                             g_pending_city = -1;
                         } else if (cancel) {
-                            admin_cancel_pending();
-                            mode = 5;
+                            if (g_pending_estrange == 2) {
+                                /* 離間第二级点「取消」→ 退回第一级（选目标武将） */
+                                const char *cn = s3_strategy_city_name(g_ast, g_pending_city);
+                                g_pending_estrange = 1; g_estrange_target = -1;
+                                s3_picker_open(g_picker, g_roster, cn, "離間·目標", 0, S3_PICK_ANY_CITY);
+                                char b[168];
+                                snprintf(b, sizeof b, "「離間」① 請選擇要離間的武將（%s）", cn ? cn : "?");
+                                s3_strategy_set_banner(g_ast, b);
+                            } else {
+                                g_pending_estrange = 0; g_estrange_target = -1;
+                                admin_cancel_pending();
+                                mode = 5;
+                            }
                         }
                     }
                 }
@@ -2094,6 +2388,33 @@ int main(int argc, char **argv) {
                                                   ? "「%s」的目標必須是**非我方**城池"
                                                   : "「%s」只能對我方城池執行",
                                                   g_pending_label);
+                                    } else if (g_pending_group == 4 && g_pending_item == 1) {
+                                        /* 定稿 F3「離間」（2026-09-27 落地）：**前提 = 该城在調查有效期内**
+                                         * （与 F2 同门槛）。第一级：选**目标武将**（该城武将，不分敌我）。 */
+                                        if (!s3_strategy_city_known(st, cidx)) {
+                                            admin_say("「離間」需先「調查」%s（調查有效期 6 個月）",
+                                                      cn ? cn : "?");
+                                        } else {
+                                            const int cnt = s3_roster_officer_count_in_city(g_roster, cn);
+                                            if (cnt <= 0) {
+                                                admin_say("「離間」：%s 城中無可離間的武將", cn ? cn : "?");
+                                            } else {
+                                                g_pending_city     = cidx;
+                                                g_pending_estrange = 1;
+                                                g_estrange_target  = -1;
+                                                s3_picker_open(g_picker, g_roster, cn, "離間·目標",
+                                                               0, S3_PICK_ANY_CITY);
+                                                char b[168];
+                                                snprintf(b, sizeof b,
+                                                         "「離間」① 請選擇要離間的武將（%s · 共 %d 人）",
+                                                         cn ? cn : "?", cnt);
+                                                s3_strategy_set_banner(g_ast, b);
+                                                printf("picker open(estrange target): city=%s n=%d\n",
+                                                       cn ? cn : "?", cnt);
+                                                ALOG("picker open(estrange target): city=%s n=%d",
+                                                     cn ? cn : "?", cnt);
+                                            }
+                                        }
                                     } else if (g_pending_query) {
                                         /* 定稿 F2「情報」：前提 —— 该城在调查有效期内 */
                                         if (!s3_strategy_city_known(st, cidx)) {
