@@ -61,6 +61,13 @@ struct S3LordPick {
     ShpImage face;
     int      face_ok, face_no;
     char     face_path[96];
+
+    /* ---- 外交模式（2026-09-28，D 区"选国家"）---- */
+    int     mode;                /* S3_LP_MODE_LORD / S3_LP_MODE_NATION */
+    char    exclude[32];         /* 外交模式排除的君主（我方） */
+    S3LordDiploFn diplo; void *diplo_ud;
+    int     idx_map[64];         /* 列表第 k 行 → 王国下标（已排除 exclude） */
+    int     n_sel;               /* 过滤后的可选势力数 */
 };
 
 S3LordPick *s3_lordpick_new(S3KingDrawText draw_text, void *text_ud,
@@ -93,6 +100,25 @@ void s3_lordpick_set_stats(S3LordPick *lp, int cities, int forts, int generals,
     lp->st_troops = troops; lp->st_people = people; lp->st_money = money;
 }
 
+/* ---------------- 外交模式（2026-09-28） ---------------- */
+void s3_lordpick_set_mode(S3LordPick *lp, int mode) { if (lp) lp->mode = mode ? 1 : 0; }
+int  s3_lordpick_mode(const S3LordPick *lp) { return lp ? lp->mode : 0; }
+void s3_lordpick_set_exclude(S3LordPick *lp, const char *lord) {
+    if (lp) snprintf(lp->exclude, sizeof lp->exclude, "%s", (lord && *lord) ? lord : "");
+}
+void s3_lordpick_set_diplo_fn(S3LordPick *lp, S3LordDiploFn fn, void *ud) {
+    if (!lp) return;
+    lp->diplo = fn; lp->diplo_ud = ud;
+}
+
+/* 用 dp 取某君主的友好/同盟（无回调 → 缺省 50 / 否） */
+static void diplo_of(const S3LordPick *lp, int idx, S3LordDiplo *out) {
+    out->friendliness = 50; out->ally = 0;
+    if (!lp || !lp->k || idx < 0) return;
+    const char *name = s3_kingdom_lord_name(lp->k, idx);
+    if (name && lp->diplo) lp->diplo(lp->diplo_ud, name, out);
+}
+
 int s3_lordpick_page(const S3LordPick *lp)     { return lp ? lp->page : 0; }
 int s3_lordpick_selected(const S3LordPick *lp) { return lp ? lp->sel : -1; }
 void s3_lordpick_select(S3LordPick *lp, int idx) { if (lp) lp->sel = idx; }
@@ -118,14 +144,21 @@ static void layout(S3LordPick *lp, Sango3Canvas *cv) {
     lp->cc_x = lp->ok_x - LP_BTN_W - 6;
     lp->cc_y = lp->ok_y;
 
+    lp->n_sel = 0;
     lp->n_rows = 0;
     if (lp->k) {
-        int n = s3_kingdom_count(lp->k);
-        int rows = (n + LP_PAGE_ROWS - 1) / LP_PAGE_ROWS;
+        const int n = s3_kingdom_count(lp->k);
+        /* 外交模式：排除我方（其余原样保留顺序） */
+        for (int i = 0; i < n && lp->n_sel < 64; ++i) {
+            const char *nm = s3_kingdom_lord_name(lp->k, i);
+            if (lp->mode && lp->exclude[0] && nm && !strcmp(nm, lp->exclude)) continue;
+            lp->idx_map[lp->n_sel++] = i;
+        }
+        int rows = (lp->n_sel + LP_PAGE_ROWS - 1) / LP_PAGE_ROWS;
         if (rows < 1) rows = 1;
         if (lp->page >= rows) lp->page = rows - 1;
         if (lp->page < 0) lp->page = 0;
-        int left = n - lp->page * LP_PAGE_ROWS;
+        int left = lp->n_sel - lp->page * LP_PAGE_ROWS;
         lp->n_rows = (left < LP_PAGE_ROWS) ? left : LP_PAGE_ROWS;
     }
 }
@@ -167,23 +200,26 @@ void s3_lordpick_render(S3LordPick *lp, Sango3Canvas *cv) {
     sango3_canvas_fill(cv, lp->lx, lp->ly, lp->lw, lp->lh, 12, 14, 24);
     sango3_canvas_frame(cv, lp->lx, lp->ly, lp->lw, lp->lh, 2, 150, 130, 80);
     if (lp->draw_text) {
-        lp->draw_text(lp->text_ud, cv, "選擇君主", lp->lx + LP_COL_NAME, lp->ly,
-                      lp->lw - 16, LP_TITLE_H, COL_TITLE, fnt, 0x4u);
+        lp->draw_text(lp->text_ud, cv, lp->mode ? "選擇國家" : "選擇君主",
+                      lp->lx + LP_COL_NAME, lp->ly, lp->lw - 16, LP_TITLE_H, COL_TITLE, fnt, 0x4u);
 
-        /* 表头：君主 / 武 / 智 / 忠 / 士（口径见文件头 LP_COL_* 注释） */
+        /* 表头：君主 / 武 / 智 / 忠 / 士（口径见文件头 LP_COL_* 注释）
+         * 外交模式（2026-09-28）：末两列换成 友（友好度 0~70）/ 盟（是否同盟）。 */
         const int32_t hy = lp->ly + LP_TITLE_H;
         struct { const char *t; int x; } H[5] = {
             { "君主", LP_COL_NAME }, { "武", LP_COL_STR }, { "智", LP_COL_INTEL },
-            { "忠", LP_COL_JUST },   { "士", LP_COL_MORAL }
+            { lp->mode ? "友" : "忠", LP_COL_JUST },
+            { lp->mode ? "盟" : "士", LP_COL_MORAL }
         };
         for (int i = 0; i < 5; ++i)
             lp->draw_text(lp->text_ud, cv, H[i].t, lp->lx + H[i].x, hy,
                           40, LP_HEAD_H, 0xB0C4E0u, fnt, 0x4u);
 
-        int n = s3_kingdom_count(lp->k);
+        const int n = lp->n_sel;
         for (int r = 0; r < lp->n_rows; ++r) {
-            int idx = lp->page * LP_PAGE_ROWS + r;
-            if (idx >= n) break;
+            const int pos = lp->page * LP_PAGE_ROWS + r;      /* 列表行号 */
+            if (pos >= n) break;
+            const int idx = lp->idx_map[pos];                 /* 真正的王国下标 */
             int32_t x, y, w, h;
             row_rect(lp, r, &x, &y, &w, &h);
             if (idx == lp->sel)
@@ -198,11 +234,19 @@ void s3_lordpick_render(S3LordPick *lp, Sango3Canvas *cv) {
             lp->draw_text(lp->text_ud, cv, buf, x + LP_COL_STR, y, 40, h, col, fnt, 0x4u);
             snprintf(buf, sizeof buf, "%d", s3_kingdom_lord_intel(lp->k, idx));
             lp->draw_text(lp->text_ud, cv, buf, x + LP_COL_INTEL, y, 40, h, col, fnt, 0x4u);
-            /* 忠 = **忠诚度**（C11 裁决）；运行时值尚未实现 → 暂以义理(Justice)作初值显示 */
-            snprintf(buf, sizeof buf, "%d", s3_kingdom_lord_justice(lp->k, idx));
-            lp->draw_text(lp->text_ud, cv, buf, x + LP_COL_JUST, y, 40, h, col, fnt, 0x4u);
-            snprintf(buf, sizeof buf, "%d", s3_kingdom_lord_morale(lp->k, idx));
-            lp->draw_text(lp->text_ud, cv, buf, x + LP_COL_MORAL, y, 40, h, col, fnt, 0x4u);
+            if (lp->mode) {
+                S3LordDiplo dp; diplo_of(lp, idx, &dp);
+                snprintf(buf, sizeof buf, "%d", dp.friendliness);
+                lp->draw_text(lp->text_ud, cv, buf, x + LP_COL_JUST, y, 40, h, col, fnt, 0x4u);
+                lp->draw_text(lp->text_ud, cv, dp.ally ? "盟" : "─",
+                              x + LP_COL_MORAL, y, 40, h, dp.ally ? COL_MINE : COL_DIM, fnt, 0x4u);
+            } else {
+                /* 忠 = **忠诚度**（C11 裁决）；运行时值尚未实现 → 暂以义理(Justice)作初值显示 */
+                snprintf(buf, sizeof buf, "%d", s3_kingdom_lord_justice(lp->k, idx));
+                lp->draw_text(lp->text_ud, cv, buf, x + LP_COL_JUST, y, 40, h, col, fnt, 0x4u);
+                snprintf(buf, sizeof buf, "%d", s3_kingdom_lord_morale(lp->k, idx));
+                lp->draw_text(lp->text_ud, cv, buf, x + LP_COL_MORAL, y, 40, h, col, fnt, 0x4u);
+            }
         }
         /* 页码 + 提示（放在按钮**上方**，否则被按钮压住 —— 实测重叠） */
         int rows = (n + LP_PAGE_ROWS - 1) / LP_PAGE_ROWS; if (rows < 1) rows = 1;
@@ -252,10 +296,18 @@ void s3_lordpick_render(S3LordPick *lp, Sango3Canvas *cv) {
                          s3_kingdom_lord_str(lp->k, idx), s3_kingdom_lord_intel(lp->k, idx));
                 lp->draw_text(lp->text_ud, cv, buf, lp->rx + 8, ty + 22, lp->rw - 16, 20,
                               COL_TEXT, fnt, 0x4u);
-                snprintf(buf, sizeof buf, "忠 %d · 士 %d",
-                         s3_kingdom_lord_justice(lp->k, idx), s3_kingdom_lord_morale(lp->k, idx));
-                lp->draw_text(lp->text_ud, cv, buf, lp->rx + 8, ty + 44, lp->rw - 16, 20,
-                              COL_TEXT, fnt, 0x4u);
+                if (lp->mode) {
+                    S3LordDiplo dp; diplo_of(lp, idx, &dp);
+                    snprintf(buf, sizeof buf, "友好 %d · %s", dp.friendliness,
+                             dp.ally ? "已同盟" : "未同盟");
+                    lp->draw_text(lp->text_ud, cv, buf, lp->rx + 8, ty + 44, lp->rw - 16, 20,
+                                  dp.ally ? COL_MINE : COL_TEXT, fnt, 0x4u);
+                } else {
+                    snprintf(buf, sizeof buf, "忠 %d · 士 %d",
+                             s3_kingdom_lord_justice(lp->k, idx), s3_kingdom_lord_morale(lp->k, idx));
+                    lp->draw_text(lp->text_ud, cv, buf, lp->rx + 8, ty + 44, lp->rw - 16, 20,
+                                  COL_TEXT, fnt, 0x4u);
+                }
                 snprintf(buf, sizeof buf, "城 %d · 人口 %d",
                          s3_kingdom_lord_cities(lp->k, idx), s3_kingdom_lord_people(lp->k, idx));
                 lp->draw_text(lp->text_ud, cv, buf, lp->rx + 8, ty + 66, lp->rw - 16, 20,
@@ -289,7 +341,11 @@ void s3_lordpick_on_move(S3LordPick *lp, int32_t x, int32_t y) {
     for (int r = 0; r < lp->n_rows; ++r) {
         int32_t rx, ry, rw, rh;
         row_rect(lp, r, &rx, &ry, &rw, &rh);
-        if (x >= rx && x < rx + rw && y >= ry && y < ry + rh) { lp->hover = r; return; }
+        if (x >= rx && x < rx + rw && y >= ry && y < ry + rh) {
+            const int pos = lp->page * LP_PAGE_ROWS + r;
+            if (pos < lp->n_sel) lp->hover = lp->idx_map[pos];   /* hover 存**王国下标** */
+            return;
+        }
     }
 }
 
@@ -316,8 +372,9 @@ int s3_lordpick_on_click(S3LordPick *lp, int32_t x, int32_t y,
         int32_t rx, ry, rw, rh;
         row_rect(lp, r, &rx, &ry, &rw, &rh);
         if (x >= rx && x < rx + rw && y >= ry && y < ry + rh) {
-            int idx = lp->page * LP_PAGE_ROWS + r;
-            if (idx < s3_kingdom_count(lp->k)) {
+            const int pos = lp->page * LP_PAGE_ROWS + r;
+            if (pos < lp->n_sel) {
+                const int idx = lp->idx_map[pos];       /* 真正的王国下标（外交模式已排除我方） */
                 lp->sel = idx;
                 if (out_lord) *out_lord = idx;
             }
@@ -326,7 +383,7 @@ int s3_lordpick_on_click(S3LordPick *lp, int32_t x, int32_t y,
     }
     if (x >= lp->lx && x < lp->lx + lp->lw && y >= lp->ly && y < lp->ly + lp->lh) {
         /* 列表空白处：左半翻上页 / 右半翻下页（页码自行 clamp，不依赖 cv） */
-        int n = lp->k ? s3_kingdom_count(lp->k) : 0;
+        const int n = lp->n_sel;
         int rows = (n + LP_PAGE_ROWS - 1) / LP_PAGE_ROWS;
         if (rows < 1) rows = 1;
         if (x < lp->lx + lp->lw / 2) { if (lp->page > 0) --lp->page; }

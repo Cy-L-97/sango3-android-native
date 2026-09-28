@@ -7,6 +7,7 @@
  */
 #include "strategy_scene.h"
 #include "shp.h"
+#include "diplomacy.h"      /* D 区外交 + L 区威望的常量/钳位（2026-09-28） */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,6 +72,17 @@ struct S3Strategy {
     int       vp_set;
     int       month;               /* 当前月份（朝堂信息条显示；確定 = 结束本月） */
     char      banner[128];         /* 信息条临时文案（命令阶段引导），空 = 默认 */
+
+    /* ---------------- D 区外交（2026-09-28）----------------
+     * 原版 `Nation.ini` 的 `Friendship` 是**势力对势力**的：友好度 0~70，
+     * 我方（自己）不列入 → 我方固定 70（`S3_FRIEND_MAX`）。
+     * 城池面板的「友好」行显示 = 该城太守所属势力在本表里的值。 */
+    struct { char lord[32]; int val; } friend[64];
+    int       n_friend;
+    struct { char lord[32]; int on; }   ally[64];      /* 同盟标记（lord → 1/0） */
+    int       n_ally;
+    int       prestige;            /* 威望 0~100（L4；仅玩家势力维护，AI 视为 50） */
+    char      hl_lord[32];         /* 外交"选国家"的临时高亮（**不改归属**），空 = 无 */
 };
 
 static void draw_hud(S3Strategy *s, Sango3Canvas *cv);
@@ -90,6 +102,7 @@ S3Strategy *s3_strategy_new(S3StratReadAsset read_asset, void *asset_ud,
     s->sel = -1;
     s->panel_zoom = 2;           /* 战略层画布 = 地图原生 1024×768 → 一档放大 */
     s->hud_on = 1;               /* 默认画 HUD（地图视图要；朝堂由 app 关掉并画到 UI 层） */
+    s->prestige = S3_PRESTIGE_INIT;   /* 威望初值 50（L4，用户 2026-09-28 裁定） */
     return s;
 }
 
@@ -137,6 +150,88 @@ int  s3_strategy_month(const S3Strategy *s) { return s ? s->month : 0; }
 
 void s3_strategy_set_banner(S3Strategy *s, const char *text) {
     if (s) snprintf(s->banner, sizeof s->banner, "%s", text ? text : "");
+}
+
+/* ============================================================ D 区外交（2026-09-28）
+ * 口径见 `docs/D区外交与L4威望_调研复核表.md`（用户逐行裁定）。 */
+
+/* 找/建 势力友好度槽位；create=0 时找不到返回 -1 */
+static int friend_slot(S3Strategy *s, const char *lord, int create) {
+    if (!s || !lord || !*lord) return -1;
+    for (int i = 0; i < s->n_friend; ++i)
+        if (!strcmp(s->friend[i].lord, lord)) return i;
+    if (!create || s->n_friend >= 64) return -1;
+    const int i = s->n_friend++;
+    snprintf(s->friend[i].lord, sizeof s->friend[i].lord, "%.31s", lord);
+    s->friend[i].val = S3_FRIEND_DEFAULT;
+    return i;
+}
+
+void s3_strategy_set_friend(S3Strategy *s, const char *lord, int value) {
+    const int i = friend_slot(s, lord, 1);
+    if (i >= 0) s->friend[i].val = s3_friend_clamp(value);
+}
+
+int s3_strategy_friend(const S3Strategy *s, const char *lord) {
+    if (!s || !lord || !*lord) return S3_FRIEND_DEFAULT;
+    if (!strcmp(lord, s->my_lord)) return S3_FRIEND_MAX;   /* 我方 = 70（原版不列自己） */
+    for (int i = 0; i < s->n_friend; ++i)
+        if (!strcmp(s->friend[i].lord, lord)) return s->friend[i].val;
+    return S3_FRIEND_DEFAULT;
+}
+
+/* 把某势力的友好度**同步到它的所有城池**（城池面板「友好」行显示用）。返回同步的城数。 */
+int s3_strategy_apply_friend(S3Strategy *s, const char *lord) {
+    if (!s || !lord || !*lord) return 0;
+    const int v = s3_strategy_friend(s, lord);
+    int n = 0;
+    for (int i = 0; i < s->n_cities; ++i) {
+        if (!s->city[i].det.lord[0]) continue;
+        if (strcmp(s->city[i].det.lord, lord)) continue;
+        s->city[i].det.friendliness = v;
+        ++n;
+    }
+    return n;
+}
+
+static int ally_slot(S3Strategy *s, const char *lord, int create) {
+    if (!s || !lord || !*lord) return -1;
+    for (int i = 0; i < s->n_ally; ++i)
+        if (!strcmp(s->ally[i].lord, lord)) return i;
+    if (!create || s->n_ally >= 64) return -1;
+    const int i = s->n_ally++;
+    snprintf(s->ally[i].lord, sizeof s->ally[i].lord, "%.31s", lord);
+    s->ally[i].on = 0;
+    return i;
+}
+
+void s3_strategy_set_ally(S3Strategy *s, const char *lord, int on) {
+    const int i = ally_slot(s, lord, 1);
+    if (i >= 0) s->ally[i].on = on ? 1 : 0;
+}
+
+int s3_strategy_is_ally(const S3Strategy *s, const char *lord) {
+    if (!s || !lord || !*lord) return 0;
+    for (int i = 0; i < s->n_ally; ++i)
+        if (!strcmp(s->ally[i].lord, lord)) return s->ally[i].on;
+    return 0;
+}
+
+void s3_strategy_set_prestige(S3Strategy *s, int v) {
+    if (s) s->prestige = s3_prestige_clamp(v);
+}
+
+int s3_strategy_prestige(const S3Strategy *s) {
+    return s ? s->prestige : S3_PRESTIGE_INIT;
+}
+
+void s3_strategy_set_highlight_lord(S3Strategy *s, const char *lord) {
+    if (!s) return;
+    snprintf(s->hl_lord, sizeof s->hl_lord, "%s", (lord && *lord) ? lord : "");
+}
+
+const char *s3_strategy_highlight_lord(const S3Strategy *s) {
+    return s ? s->hl_lord : "";
 }
 
 int s3_strategy_set_map(S3Strategy *s, const char *pak_path) {
@@ -384,6 +479,12 @@ void s3_strategy_render(S3Strategy *s, Sango3Canvas *cv) {
                                 1, 255, 200, 120);
         } else if (mine) {
             sango3_canvas_frame(cv, lx - hw, ly - hh, hw * 2, hh * 2, 2, 255, 214, 90);
+        } else if (s->hl_lord[0] && s->city[i].det.lord[0] &&
+                   !strcmp(s->city[i].det.lord, s->hl_lord)) {
+            /* D 区外交「选国家」的临时高亮（青色双线，**不改 mine 归属**）——2026-09-28 */
+            sango3_canvas_frame(cv, lx - hw, ly - hh, hw * 2, hh * 2, 2, 90, 220, 255);
+            sango3_canvas_frame(cv, lx - hw - 2, ly - hh - 2, (hw + 2) * 2, (hh + 2) * 2,
+                                1, 160, 235, 255);
         }
         /* 城名放图标下方；旗**插在城池点位本身**（与选中框同一中心点）—— 都不遮城名 */
         draw_city_name(s, cv, lx, ly, hw, hh, s->city[i].name, mine, sel);
@@ -471,14 +572,14 @@ static void draw_hud(S3Strategy *s, Sango3Canvas *cv) {
         if (s->banner[0])
             snprintf(buf, sizeof buf, "%s", s->banner);
         else if (s->is_court)
-            snprintf(buf, sizeof buf, "朝堂 · 第 %d 月 —— 左侧行政主選單執行內政，「確定」結束本月",
-                     s->month);
+            snprintf(buf, sizeof buf, "朝堂 · 第 %d 月 · 威望 %d —— 左側行政主選單執行內政，「確定」結束本月",
+                     s->month, s->prestige);
         else if (s->sel >= 0 && s->sel < s->n_cities)
-            snprintf(buf, sizeof buf, "%s（%s）—— 拖动查看地图 / 点击其它城",
-                     s->city[s->sel].name, s->city[s->sel].mine ? "我方" : "他方");
+            snprintf(buf, sizeof buf, "%s（%s）· 威望 %d —— 拖动查看地图 / 点击其它城",
+                     s->city[s->sel].name, s->city[s->sel].mine ? "我方" : "他方", s->prestige);
         else
-            snprintf(buf, sizeof buf, "战略层：拖动查看地图 · 点击城市（%d 城，我方 %d）",
-                     s->n_cities, mine_count(s));
+            snprintf(buf, sizeof buf, "战略层 · 威望 %d：拖动查看地图 · 点击城市（%d 城，我方 %d）",
+                     s->prestige, s->n_cities, mine_count(s));
         s->draw_text(s->text_ud, cv, buf, 14, bar_y, cv->w - 28, bar_h, 0xF0DCA0, bar_f, 0x4u);
     }
 

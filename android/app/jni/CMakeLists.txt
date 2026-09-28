@@ -61,6 +61,7 @@ add_library(main SHARED
   ${ENGINE}/src/lord_picker.c
   ${ENGINE}/src/officer_ui.c
   ${ENGINE}/src/itemstore.c
+  ${ENGINE}/src/diplomacy.c
   ${ENGINE}/src/sango3app.c)
 
 target_include_directories(main PRIVATE ${ENGINE}/src ${FT_SRC}/include)

@@ -150,6 +150,21 @@ int  s3_strategy_city_investigate(S3Strategy *s, int idx, int until_month);
 /* 非我方的已调查城 → 有效至该月；未调查/我方 → 0 */
 int  s3_strategy_city_invest_until(const S3Strategy *s, int idx);
 
+/* -------- D 区外交（2026-09-28）：势力友好度 / 同盟 / 威望 / 高亮 --------
+ * 原版 `Nation.ini` 的 `Friendship` 是**势力对势力**的（0~70）；我方不列入 → 固定 70。
+ * 城池面板的「友好」行显示 = 该城太守所属势力在本表里的值（改表后调 apply_friend 同步）。 */
+void s3_strategy_set_friend(S3Strategy *s, const char *lord, int value);
+int  s3_strategy_friend(const S3Strategy *s, const char *lord);
+int  s3_strategy_apply_friend(S3Strategy *s, const char *lord);   /* 返回同步的城数 */
+void s3_strategy_set_ally(S3Strategy *s, const char *lord, int on);
+int  s3_strategy_is_ally(const S3Strategy *s, const char *lord);
+/* 威望 0~100（L4；仅玩家势力维护，AI 视为 50）—— 显示在顶部信息条 */
+void s3_strategy_set_prestige(S3Strategy *s, int v);
+int  s3_strategy_prestige(const S3Strategy *s);
+/* 外交"选国家"的**临时高亮**（青色框，**不改归属**）；传 NULL/"" 取消 */
+void s3_strategy_set_highlight_lord(S3Strategy *s, const char *lord);
+const char *s3_strategy_highlight_lord(const S3Strategy *s);
+
 #ifdef __cplusplus
 }
 #endif

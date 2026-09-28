@@ -32,12 +32,15 @@ typedef struct S3GenPicker S3GenPicker;
  *   ANY_CITY  —— 指定城里的**全部武将（不分敌我）** —— 定稿 F2「情報」：看敌将详情。
  *                此模式下不按"本月已行动"置灰（看情报不消耗行动）。
  *   WILD_CITY —— 指定城里的**在野武将** —— 定稿 B2：搜索命中「人才」后挑一名招揽
- *                （2026-09-27 新增）。同样不受"本月已行动"约束（执行的是发起搜索的那位）。 */
+ *                （2026-09-27 新增）。同样不受"本月已行动"约束（执行的是发起搜索的那位）。
+ *   MY_ALL_FREE —— 我方全军，但**不受"本月已行动"约束** —— D 区外交（2026-09-28）：
+ *                外交**不消耗**执行者的月度行动，故已行动者仍可选。 */
 typedef enum {
-    S3_PICK_MY_CITY  = 0,
-    S3_PICK_MY_ALL   = 1,
-    S3_PICK_ANY_CITY = 2,
-    S3_PICK_WILD_CITY= 3
+    S3_PICK_MY_CITY   = 0,
+    S3_PICK_MY_ALL    = 1,
+    S3_PICK_ANY_CITY  = 2,
+    S3_PICK_WILD_CITY = 3,
+    S3_PICK_MY_ALL_FREE = 4
 } S3PickScope;
 
 S3GenPicker *s3_picker_new(S3PickDrawText draw_text, void *text_ud);

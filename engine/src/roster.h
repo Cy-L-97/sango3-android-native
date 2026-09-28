@@ -240,8 +240,13 @@ int  s3_personality_similarity(int a, int b);
 
 /* X-3 搜索招揽**在野**武将的成功率（%）—— 只看执行者本人与野将的**相性**
  * （C10 裁决：与君主是谁无关）。actor = 执行者，target = 在野武将。
- * P% = 40 + 智力/5 + 等级 + (sim − 50)/2，钳 5~95。【待测】 */
-int  s3_recruit_chance(const S3Officer *actor, const S3Officer *target);
+ * P% = 40 + 智力/5 + 等级 + (sim − 50)/2 + 威望加成((威望−50)/5)，钳 5~95。【待测】
+ * `prestige` 传本势力威望（L1②：威望越高越容易招揽；无威望概念时传 50 = 不加成）。 */
+int  s3_recruit_chance(const S3Officer *actor, const S3Officer *target, int prestige);
+
+/* 解盟惩罚用（定稿 D2：全体武将忠诚 −10）：对我方**全部非在野**武将加 delta
+ * （负值 = 降忠诚，内部钳 0~100）。返回受影响人数。 */
+int  s3_roster_loyalty_all(S3Roster *r, int delta);
 
 /* 招揽成功：野将转我方（wild=0 / mine=1 / city 改写为新城；忠诚度保持 = 义理）。
  * 返回 1 = 成功；0 = 参数非法（非在野 / 空指针 / 非我方城由调用方保证）。 */

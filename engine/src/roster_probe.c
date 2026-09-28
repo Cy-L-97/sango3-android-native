@@ -13,6 +13,7 @@
  * 对应文档：docs/P1剩余-忠诚变动·搜索招揽·離間_调研复核表.md
  */
 #include "roster.h"
+#include "diplomacy.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -69,10 +70,10 @@ int main(int argc, char **argv) {
      *  張角(智95·級1) vs 跨派系(sim 15)  → 40+19+1-17 = 43
      *  呂布(智36·級1) vs 同相性(sim 100) → 40+7+1+25  = 73
      *  呂布(智36·級1) vs 跨派系(sim 15)  → 40+7+1-17  = 31 */
-    const int rc_zj_same = s3_recruit_chance(zhangjiao, wild_same);
-    const int rc_zj_far  = s3_recruit_chance(zhangjiao, wild_far);
-    const int rc_lb_same = s3_recruit_chance(lvbu, wild_same);
-    const int rc_lb_far  = s3_recruit_chance(lvbu, wild_far);
+    const int rc_zj_same = s3_recruit_chance(zhangjiao, wild_same, S3_PRESTIGE_INIT);
+    const int rc_zj_far  = s3_recruit_chance(zhangjiao, wild_far, S3_PRESTIGE_INIT);
+    const int rc_lb_same = s3_recruit_chance(lvbu, wild_same, S3_PRESTIGE_INIT);
+    const int rc_lb_far  = s3_recruit_chance(lvbu, wild_far, S3_PRESTIGE_INIT);
     printf("# --- X-3 招揽成功率 ---\n");
     printf("recruit.zhangjiao.same=%d\n", rc_zj_same);
     printf("recruit.zhangjiao.far=%d\n",  rc_zj_far);
@@ -154,6 +155,28 @@ int main(int argc, char **argv) {
         printf("recruit.again=%d\n", s3_officer_recruit(o, "平原"));  /* 非在野 → 0 */
     }
 
+    /* ============================== 6) D 区外交 + L 区威望（2026-09-28） ==============================
+     * 口径：docs/D区外交与L4威望_调研复核表.md（用户逐行裁定）。 */
+    printf("# --- D 区外交 / L 区威望 ---\n");
+    printf("diplo.ally.60.80.50=%d\n",  s3_diplo_ally_chance(80, 60, 50));   /* 20+20+5+0=45 */
+    printf("diplo.ally.70.95.70=%d\n",  s3_diplo_ally_chance(95, 70, 70));   /* 20+23+10+5=58 */
+    printf("diplo.ally.below=%d\n",     s3_diplo_ally_chance(99, 50, 100));  /* 友好<60 → 0 */
+    printf("diplo.gift.a100=%d\n",      s3_diplo_gift_gain(100));            /* 10 */
+    printf("diplo.gift.a24=%d\n",       s3_diplo_gift_gain(24));             /* 2 */
+    printf("diplo.gift.a38=%d\n",       s3_diplo_gift_gain(38));             /* 4 */
+    printf("diplo.money.300=%d\n",      s3_diplo_money_gain(300));           /* 3 */
+    printf("diplo.money.1000=%d\n",     s3_diplo_money_gain(1000));          /* 10 */
+    printf("diplo.money.50=%d\n",       s3_diplo_money_gain(50));            /* 0 → 钳到 1 */
+    printf("diplo.money.0=%d\n",        s3_diplo_money_gain(0));             /* 0（不给钱） */
+    printf("diplo.talk.100.50=%d\n",    s3_diplo_talk_gain(100, 50));        /* 7 */
+    printf("diplo.talk.30.0=%d\n",      s3_diplo_talk_gain(30, 0));          /* 3+1-10 → 钳 1 */
+    printf("prestige.ally_bonus.100=%d\n",    s3_prestige_ally_bonus(100));    /* +12 */
+    printf("prestige.ally_bonus.0=%d\n",      s3_prestige_ally_bonus(0));      /* -12 */
+    printf("prestige.recruit_bonus.100=%d\n", s3_prestige_recruit_bonus(100)); /* +10 */
+    printf("prestige.recruit_bonus.0=%d\n",   s3_prestige_recruit_bonus(0));   /* -10 */
+    printf("friend.clamp.80=%d\n",      s3_friend_clamp(80));                /* 70 */
+    printf("friend.clamp.-5=%d\n",      s3_friend_clamp(-5));                /* 0 */
+
     if (check) {
         printf("\n== expected ==\n");
         expect_i("recruit.zhangjiao.same", rc_zj_same, 85);
@@ -166,6 +189,22 @@ int main(int argc, char **argv) {
         expect_i("chance.guanyu",          s3_estrange_chance(guanyu, lvbu), 0);
         expect_i("chance.lvbu",            s3_estrange_chance(lvbu, wild_far), 34);
         expect_i("chance.norm",            s3_estrange_chance(norm, zhangjiao), 11);
+        expect_i("diplo.ally.60.80.50",    s3_diplo_ally_chance(80, 60, 50), 45);
+        expect_i("diplo.ally.70.95.70",    s3_diplo_ally_chance(95, 70, 70), 58);
+        expect_i("diplo.ally.below",       s3_diplo_ally_chance(99, 50, 100), 0);
+        expect_i("diplo.gift.a100",        s3_diplo_gift_gain(100), 10);
+        expect_i("diplo.gift.a24",         s3_diplo_gift_gain(24), 2);
+        expect_i("diplo.money.300",        s3_diplo_money_gain(300), 3);
+        expect_i("diplo.money.1000",       s3_diplo_money_gain(1000), 10);
+        expect_i("diplo.money.50",         s3_diplo_money_gain(50), 1);
+        expect_i("diplo.talk.100.50",      s3_diplo_talk_gain(100, 50), 7);
+        expect_i("diplo.talk.30.0",        s3_diplo_talk_gain(30, 0), 1);
+        expect_i("prestige.ally_bonus.100",    s3_prestige_ally_bonus(100), 12);
+        expect_i("prestige.ally_bonus.0",      s3_prestige_ally_bonus(0), -12);
+        expect_i("prestige.recruit_bonus.100", s3_prestige_recruit_bonus(100), 10);
+        expect_i("prestige.recruit_bonus.0",   s3_prestige_recruit_bonus(0), -10);
+        expect_i("friend.clamp.80",        s3_friend_clamp(80), 70);
+        expect_i("friend.clamp.-5",        s3_friend_clamp(-5), 0);
         printf("\n%s\n", g_fail ? "**FAIL**" : "ALL OK");
     }
 

@@ -74,7 +74,11 @@ static int list_workers(const S3GenPicker *p, int *out, int out_max) {
     if (!p || !p->roster) return 0;
     switch (p->scope) {
     case S3_PICK_MY_ALL:
-        return s3_roster_workers_mine_all(p->roster, p->only_idle, out, out_max);
+    case S3_PICK_MY_ALL_FREE:
+        /* FREE：我方全军但忽略"本月已行动"（外交不消耗行动） */
+        return s3_roster_workers_mine_all(p->roster,
+                                          p->scope == S3_PICK_MY_ALL ? p->only_idle : 0,
+                                          out, out_max);
     case S3_PICK_ANY_CITY:
         return s3_roster_officers_in_city(p->roster, p->city, out, out_max);
     case S3_PICK_WILD_CITY:
@@ -85,11 +89,12 @@ static int list_workers(const S3GenPicker *p, int *out, int out_max) {
 }
 
 /* 该城"本月未行动"的执行者数（提示用；与列表是否过滤无关）。
- * ANY_CITY / WILD_CITY 不涉及行动限制 → 直接返回候选总数。 */
+ * ANY_CITY / WILD_CITY / MY_ALL_FREE 不涉及行动限制 → 直接返回候选总数。 */
 static int idle_workers(const S3GenPicker *p) {
     int all[S3_ROSTER_MAX];
     if (!p || !p->roster) return 0;
-    if (p->scope == S3_PICK_ANY_CITY || p->scope == S3_PICK_WILD_CITY)
+    if (p->scope == S3_PICK_ANY_CITY || p->scope == S3_PICK_WILD_CITY ||
+        p->scope == S3_PICK_MY_ALL_FREE)
         return list_workers(p, all, S3_ROSTER_MAX);
     if (p->scope == S3_PICK_MY_ALL)
         return s3_roster_workers_mine_all(p->roster, 1, all, S3_ROSTER_MAX);
@@ -100,9 +105,7 @@ static int idle_workers(const S3GenPicker *p) {
  * ANY_CITY（看情报）/ WILD_CITY（挑野将）不受限。 */
 static int acting_scope(const S3GenPicker *p) {
     return p && (p->scope == S3_PICK_MY_CITY || p->scope == S3_PICK_MY_ALL);
-}
-
-/* 计算并缓存面板几何 + 当前页内容（render 与 hit 共用） */
+}/* 计算并缓存面板几何 + 当前页内容（render 与 hit 共用） */
 static void layout(S3GenPicker *p, Sango3Canvas *cv) {
     p->z  = (cv->w <= 640) ? 1 : 2;
     int all[S3_ROSTER_MAX];
@@ -158,7 +161,7 @@ void s3_picker_render(S3GenPicker *p, Sango3Canvas *cv) {
 
     /* 标题：人数放这里（原先塞在页脚，文字会溢出到「取消」按钮下面 —— 实测显示重叠）；
      * MY_ALL 作用域没有单一城名，改写成"我方全軍"。 */
-    if (p->scope == S3_PICK_MY_ALL)
+    if (p->scope == S3_PICK_MY_ALL || p->scope == S3_PICK_MY_ALL_FREE)
         snprintf(buf, sizeof buf, "%s —— 選擇執行者（我方全軍 · 共 %d 人）",
                  p->title, (int)p->n_total);
     else if (p->scope == S3_PICK_ANY_CITY)

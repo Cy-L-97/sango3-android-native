@@ -71,7 +71,7 @@ target_link_libraries(sango3data PRIVATE sango3_game)
 
 # 名册规则验证器（2026-09-27）：招揽 / 離間 / 等级差系数 —— 纯规则、不依赖 PAK，
 # 手工造将逐项出数，供离线核对公式（对应 docs/P1剩余-…_调研复核表.md 的"离线对数用"）。
-add_executable(sango3roster src/roster_probe.c src/roster.c)
+add_executable(sango3roster src/roster_probe.c src/roster.c src/diplomacy.c)
 target_link_libraries(sango3roster PRIVATE sango3_game)
 
 # UI 布局解析验证器（M2：Menu.ini → 控件/图标/配色，含 #include 展开）
@@ -134,7 +134,7 @@ if(SANGO3_HAVE_SDL)
   target_link_libraries(sango3menu PRIVATE sango3_present)
 
   # 游戏主程序雏形（M2-6 交互 + M2-7 场景切换）：需要 SDL 窗口与字体层
-  add_executable(sango3app src/sango3app.c src/editor_scene.c src/kingdom_scene.c src/strategy_scene.c src/admin_menu.c src/roster.c src/gen_picker.c src/lord_picker.c src/officer_ui.c src/itemstore.c)
+  add_executable(sango3app src/sango3app.c src/editor_scene.c src/kingdom_scene.c src/strategy_scene.c src/admin_menu.c src/roster.c src/gen_picker.c src/lord_picker.c src/officer_ui.c src/itemstore.c src/diplomacy.c)
   target_link_libraries(sango3app PRIVATE sango3_scene sango3_present)
   set_target_properties(sango3app PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")

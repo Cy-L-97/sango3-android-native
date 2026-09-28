@@ -52,6 +52,22 @@ int  s3_lordpick_page(const S3LordPick *lp);
 int  s3_lordpick_selected(const S3LordPick *lp);
 void s3_lordpick_select(S3LordPick *lp, int idx);
 
+/* ---------------- 外交模式（2026-09-28，D 区"选国家"） ----------------
+ * mode 0 = 選君主（默认，原行为）；1 = 選國家（外交）：
+ *   · 列表**排除我方**（`set_exclude`）；
+ *   · 末两列改显示「友（友好度 0~70）/ 盟（是否同盟）」；
+ *   · 标题改「選擇國家」；右侧面板同步显示友好/同盟。
+ * 友好度与同盟状态由**回调**提供（本模块不认识战略层数据）。 */
+#define S3_LP_MODE_LORD    0
+#define S3_LP_MODE_NATION  1
+typedef struct { int friendliness; int ally; } S3LordDiplo;
+typedef int (*S3LordDiploFn)(void *ud, const char *lord, S3LordDiplo *out);
+
+void s3_lordpick_set_mode(S3LordPick *lp, int mode);
+int  s3_lordpick_mode(const S3LordPick *lp);
+void s3_lordpick_set_exclude(S3LordPick *lp, const char *lord);
+void s3_lordpick_set_diplo_fn(S3LordPick *lp, S3LordDiploFn fn, void *ud);
+
 #ifdef __cplusplus
 }
 #endif

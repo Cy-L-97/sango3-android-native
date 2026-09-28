@@ -2,6 +2,7 @@
  * roster.c —— 武将名册实现（见 roster.h）
  */
 #include "roster.h"
+#include "diplomacy.h"      /* 威望钳位/初值（L1② 招揽加成、D2 解盟惩罚） */
 
 #include <stdlib.h>
 #include <string.h>
@@ -475,13 +476,30 @@ int s3_personality_similarity(int a, int b) {
 
 /* X-3 搜索招揽**在野**武将成功率（%）。C10 裁决：只看执行者本人与野将的相性，
  * **与君主是谁无关**（"这个人搜不来，就换一个相性近的人去搜"）。 */
-int s3_recruit_chance(const S3Officer *actor, const S3Officer *target) {
+int s3_recruit_chance(const S3Officer *actor, const S3Officer *target, int prestige) {
     if (!actor || !target) return 0;
     const int sim = s3_personality_similarity(actor->personality, target->personality);
-    int p = S3_RECRUIT_P_BASE + actor->intel / 5 + actor->level + (sim - 50) / 2;
+    /* 威望加成（L1②）：(威望−50)/5，钳 −10~+10；无威望概念时传 50 → 0 */
+    int pbonus = (s3_prestige_clamp(prestige) - S3_PRESTIGE_INIT) / 5;
+    if (pbonus < -10) pbonus = -10;
+    if (pbonus >  10) pbonus =  10;
+    int p = S3_RECRUIT_P_BASE + actor->intel / 5 + actor->level + (sim - 50) / 2 + pbonus;
     if (p < S3_RECRUIT_P_MIN) p = S3_RECRUIT_P_MIN;
     if (p > S3_RECRUIT_P_MAX) p = S3_RECRUIT_P_MAX;
     return p;
+}
+
+/* 解盟惩罚（定稿 D2）：对我方**全部非在野**武将加 delta（负值 = 降忠诚）。返回人数。
+ * 在野武将不算（无主，忠诚无意义）；他方不碰。 */
+int s3_roster_loyalty_all(S3Roster *r, int delta) {
+    if (!r) return 0;
+    int n = 0;
+    for (int i = 0; i < r->n; ++i) {
+        if (r->o[i].wild || !r->o[i].mine) continue;
+        s3_officer_add_loyalty(&r->o[i], delta);
+        ++n;
+    }
+    return n;
 }
 
 /* 招揽成功 → 野将转我方。忠诚度**保持 = 义理**（不因"换主"重置为别的值；

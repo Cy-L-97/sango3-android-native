@@ -34,6 +34,7 @@
 #include "officer_ui.h"
 #include "lord_picker.h"
 #include "itemstore.h"
+#include "diplomacy.h"      /* D 区外交 + L 区威望（2026-09-28） */
 
 #include <SDL.h>
 #include <stdarg.h>
@@ -915,6 +916,14 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
             }
         }
     }
+    /* D 区外交（2026-09-28）：把 Nation.ini 里**我方这一行**的势力友好度 push 进战略层
+     * （原版值域 0~70；我方自己不列入 → 由 s3_strategy_friend 固定返回 70）。 */
+    if (st) {
+        for (int i = 0; i < 96; ++i)
+            if (friend_n[i].name[0]) s3_strategy_set_friend(st, friend_n[i].name, friend_n[i].n);
+        if (my_lord && my_lord[0])   /* 我方 → 表里也放一条，方便"选国家"列表统一取数 */
+            s3_strategy_set_friend(st, my_lord, S3_FRIEND_MAX);
+    }
 
     /* ---- 组装：遍历 MenuMap.ini 的城市按钮，逐城取详情 ---- */
     int n = 0, n_mine = 0;
@@ -953,10 +962,11 @@ static int load_cities(S3Strategy *st, PakCtx *c, int scenario_id,
          * （每势力只列 17 个对手，规模小的会漏列）。注意表里**允许值为 0**
          * （张角与所有势力友好度就是 0），所以必须用带 found 标志的查询。 */
         if (is_mine) {
-            det.friendliness = 100;
+            det.friendliness = S3_FRIEND_MAX;        /* 原版：我方不列入 Friendship → 视为满值 70 */
         } else {
             int fr = 0;
-            det.friendliness = nc_find(friend_n, 96, det.lord, &fr) ? fr : 50;
+            det.friendliness = nc_find(friend_n, 96, det.lord, &fr) ? s3_friend_clamp(fr)
+                                                                    : S3_FRIEND_DEFAULT;
         }
         {   /* 最佳执行者（ General01 能力 × General02 归属，各取该城最高） */
             const CityBest *bi = cb_get(bint, 96, nm);
@@ -1080,6 +1090,26 @@ static S3OfficerUI *g_oui = NULL;
 static S3LordPick  *g_lp = NULL;            /* 選擇君主（大地图版，I2） */
 static int          g_lp_ready = 0;         /* 1 = 该界面已装载地图+城池（避免重复载入） */
 
+/* ---------------- D 区外交（2026-09-28，定稿 D 区 / L 区）----------------
+ * 流程：`外交 → 同盟/解盟` →① **選國家**（复用大地图版 lord_picker，排除我方，
+ *       多一列「友/盟」）→②[同盟] 選執行者 →③ 選方式（贈送寶物/給予金錢/遊說）
+ *       →[同盟] 判定 / ④[解盟] 确认 → 执行。
+ * 口径与数值唯一出处：`docs/D区外交与L4威望_调研复核表.md` + `diplomacy.{c,h}`。
+ * **用户 2026-09-28 裁定：外交不消耗执行者的月度行动。** */
+static int  g_diplo_item   = -1;   /* 0 = 同盟 · 1 = 解盟；-1 = 未启用 */
+static int  g_diplo_stage  = 0;    /* 0 关 · 1 选国家 · 2 选执行者 · 3 选方式 · 4 解盟确认 */
+static char g_diplo_nation[32] = "";  /* 已选国家（势力君主名） */
+static int  g_diplo_actor  = -1;      /* 执行者 roster 下标（同盟用） */
+/* 选方式 / 解盟确认 用的小浮层（app 侧自绘；3~4 行 + 取消） */
+#define DW_MAX 4
+static const char *g_dw_label[DW_MAX];
+static char        g_dw_buf[DW_MAX][48];
+static int         g_dw_n = 0, g_dw_hover = -1;
+/* 字体上下文（main 里是局部变量 —— 自绘浮层要用，故存一份指针） */
+static FontCtx    *g_fc = NULL;
+/* 地图视口尺寸（apply_present 处也在用；这里**提前声明**，供外交浮层的命中几何复用） */
+static int32_t     g_vw = 1024, g_vh = 768;
+
 static void admin_say(const char *fmt, ...) {
     char b[192];
     va_list ap;
@@ -1089,6 +1119,303 @@ static void admin_say(const char *fmt, ...) {
     s3_admin_set_hint(g_adm, b);
     printf("admin: %s\n", b);
     ALOG("admin: %s", b);
+}
+
+/* ============================ D 区外交（2026-09-28）实现 ============================
+ * 口径与数值唯一出处：`docs/D区外交与L4威望_调研复核表.md` + `diplomacy.{c,h}`。
+ * **用户 2026-09-28 裁定：外交不消耗执行者的月度行动。**
+ * UI：**選國家**复用大地图版 `lord_picker`（外交模式：排除我方、多一列「友/盟」）；
+ *     選方式 / 解盟确认 是本文件里的一个 app 自绘小浮层（3~4 行 + 取消）。 */
+
+static const char *my_lord_name(void) {
+    if (!g_kd) return "";
+    const int si = s3_kingdom_selected(g_kd);
+    return (si >= 0) ? s3_kingdom_lord_name(g_kd, si) : "";
+}
+
+/* lord_picker 的"友好/同盟"回调（外交模式列表与右侧面板用） */
+static int diplo_fn(void *ud, const char *lord, S3LordDiplo *out) {
+    (void)ud;
+    if (!g_ast || !out || !lord) return 0;
+    out->friendliness = s3_strategy_friend(g_ast, lord);
+    out->ally         = s3_strategy_is_ally(g_ast, lord);
+    return 1;
+}
+
+/* 底部统计栏：按某势力的城池聚合（選擇君主 与 外交选国家 共用） */
+static void lord_stats_fill(const char *lord) {
+    if (!g_lp || !g_ast) return;
+    int cities = 0, forts = 0, gens = 0;
+    long long troops = 0, people = 0, money = 0;
+    if (lord && *lord) {
+        for (int i = 0; i < s3_strategy_count(g_ast); ++i) {
+            const S3CityDetail *d = s3_strategy_city_detail(g_ast, i);
+            if (!d || strcmp(d->lord, lord)) continue;
+            const char *cn = s3_strategy_city_name(g_ast, i);
+            if (city_is_fort(cn)) ++forts; else ++cities;
+            gens   += d->n_generals;
+            troops += d->reserve;
+            people += d->people;
+            money  += d->money;
+        }
+    }
+    s3_lordpick_set_stats(g_lp, cities, forts, gens, troops, people, money);
+}
+
+static S3CityDetail *city_detail_mut_by_name(const char *city) {
+    if (!g_ast || !city || !*city) return NULL;
+    for (int i = 0; i < s3_strategy_count(g_ast); ++i) {
+        const char *n = s3_strategy_city_name(g_ast, i);
+        if (n && !strcmp(n, city)) return s3_strategy_city_detail_mut(g_ast, i);
+    }
+    return NULL;
+}
+
+/* 该城可作外交礼物的物品（`Attraction` 最高的一件，且库里有货）；无则 NULL */
+static const S3AppItem *best_gift_of_city(const char *city) {
+    const S3AppItem *best = NULL;
+    if (!g_store || !city || !*city) return NULL;
+    for (int i = 0; i < g_n_items; ++i) {
+        if (g_items[i].attraction <= 0) continue;
+        if (s3_store_count(g_store, city, g_items[i].name) <= 0) continue;
+        if (!best || g_items[i].attraction > best->attraction) best = &g_items[i];
+    }
+    return best;
+}
+
+/* ---- 选方式 / 解盟确认 的小浮层（几何：render 与 hit 共用一套） ---- */
+#define DW_W    260
+#define DW_ROW  30
+#define DW_HDR  30
+static void dw_rect(int w, int h, int *px, int *py, int *pw, int *ph) {
+    const int rows = (g_dw_n > 0) ? g_dw_n : 1;
+    *pw = DW_W;
+    *ph = DW_HDR + rows * DW_ROW + 4 + DW_ROW;      /* 标题 + 行 + 取消 */
+    *px = (w - *pw) / 2;
+    *py = (h - *ph) / 2;
+    if (*px < 0) *px = 0;
+    if (*py < 0) *py = 0;
+}
+
+static void diplo_way_render(Sango3Canvas *cv) {
+    if (!cv || g_dw_n <= 0) return;
+    int px, py, pw, ph;
+    dw_rect(cv->w, cv->h, &px, &py, &pw, &ph);
+    sango3_canvas_fill(cv, px, py, pw, ph, 12, 14, 24);
+    sango3_canvas_frame(cv, px, py, pw, ph, 2, 150, 130, 80);
+    if (!g_fc) return;
+    const int fnt = (cv->w <= 640) ? 1 : 2;
+    char hdr[64];
+    snprintf(hdr, sizeof hdr, "%s（%s）—— %s",
+             g_diplo_item == 0 ? "同盟" : "解盟", g_diplo_nation,
+             g_diplo_item == 0 ? "請選擇方式" : "確定要解盟嗎？");
+    draw_text_cb(g_fc, cv, hdr, px + 8, py, pw - 16, DW_HDR, 0xF0DCA0u, fnt, 0x4u);
+    for (int i = 0; i < g_dw_n; ++i) {
+        const int ry = py + DW_HDR + i * DW_ROW;
+        if (g_dw_hover == i) sango3_canvas_fill(cv, px + 4, ry, pw - 8, DW_ROW - 2, 40, 60, 110);
+        const char *t = g_dw_buf[i][0] ? g_dw_buf[i] : g_dw_label[i];
+        draw_text_cb(g_fc, cv, t, px + 10, ry, pw - 20, DW_ROW - 2,
+                     g_dw_hover == i ? 0xD25915u : 0xDCDCDCu, fnt, 0x4u);
+    }
+    {
+        const int cy = py + ph - DW_ROW - 2;
+        if (g_dw_hover == 100) sango3_canvas_fill(cv, px + 4, cy, pw - 8, DW_ROW - 2, 40, 60, 110);
+        draw_text_cb(g_fc, cv, "取消", px + 10, cy, pw - 20, DW_ROW - 2,
+                     g_dw_hover == 100 ? 0xD25915u : 0x9AA4B8u, fnt, 0x4u);
+    }
+}
+
+/* 命中：0..n-1 = 某行 · 100 = 取消 · -1 = 未命中（浮层外的点击一律吞掉） */
+static int diplo_way_hit(int32_t x, int32_t y, int *inside) {
+    int px, py, pw, ph;
+    dw_rect(g_vw, g_vh, &px, &py, &pw, &ph);
+    if (inside) *inside = (x >= px && x < px + pw && y >= py && y < py + ph);
+    for (int i = 0; i < g_dw_n; ++i) {
+        const int ry = py + DW_HDR + i * DW_ROW;
+        if (x >= px + 4 && x < px + pw - 4 && y >= ry && y < ry + DW_ROW - 2) return i;
+    }
+    {
+        const int cy = py + ph - DW_ROW - 2;
+        if (x >= px + 4 && x < px + pw - 4 && y >= cy && y < cy + DW_ROW - 2) return 100;
+    }
+    return -1;
+}
+
+/* 打开浮层：同盟 → 三方式（Text.ini 7200 寶物 / 7201 金錢 / 7202 遊說）；解盟 → 单行确认 */
+static void diplo_way_open(void) {
+    g_dw_n = 0; g_dw_hover = -1;
+    for (int i = 0; i < DW_MAX; ++i) { g_dw_label[i] = ""; g_dw_buf[i][0] = '\0'; }
+    if (g_diplo_item == 0) {
+        S3Officer *a = (g_diplo_actor >= 0) ? s3_roster_mut(g_roster, g_diplo_actor) : NULL;
+        const char *city = a ? a->city : "";
+        const int prestige = s3_strategy_prestige(g_ast);
+        const S3AppItem *gift = best_gift_of_city(city);
+        S3CityDetail *cd = city_detail_mut_by_name(city);
+        const int money = cd ? (cd->money > 1000 ? 1000 : cd->money) : 0;
+        g_dw_label[0] = "贈送寶物"; g_dw_label[1] = "給予金錢"; g_dw_label[2] = "遊說";
+        if (gift) snprintf(g_dw_buf[0], sizeof g_dw_buf[0], "贈送寶物「%s」（友好 +%d）",
+                           gift->name, s3_diplo_gift_gain(gift->attraction));
+        else      snprintf(g_dw_buf[0], sizeof g_dw_buf[0], "贈送寶物（%s 無寶物）", city);
+        snprintf(g_dw_buf[1], sizeof g_dw_buf[1], "給予金錢 %d（友好 +%d）",
+                 money, s3_diplo_money_gain(money));
+        snprintf(g_dw_buf[2], sizeof g_dw_buf[2], "遊說（友好 +%d）",
+                 s3_diplo_talk_gain(a ? a->intel : 0, prestige));
+        g_dw_n = 3;
+    } else {
+        snprintf(g_dw_buf[0], sizeof g_dw_buf[0], "確定與 %s 解盟", g_diplo_nation);
+        g_dw_label[0] = g_dw_buf[0];
+        g_dw_n = 1;
+    }
+}
+
+/* 收口：退出外交（恢复菜单 / 清高亮 / 复位 lord_picker 模式） */
+static void diplo_end(void) {
+    g_diplo_item = -1; g_diplo_stage = 0;
+    g_diplo_nation[0] = '\0'; g_diplo_actor = -1;
+    g_dw_n = 0; g_dw_hover = -1;
+    if (g_lp) {
+        s3_lordpick_set_mode(g_lp, S3_LP_MODE_LORD);
+        s3_lordpick_set_exclude(g_lp, "");
+    }
+    if (g_ast) {
+        s3_strategy_set_highlight_lord(g_ast, "");
+        s3_strategy_set_banner(g_ast, "");
+    }
+    if (g_adm) s3_admin_set_visible(g_adm, 1);
+}
+
+/* 进入外交：命令 → 开"选国家"叠加层（切到大地图） */
+static void diplo_start(int item) {
+    if (!g_ast || !g_kd || !g_lp) { admin_say("外交：尚未開局"); return; }
+    g_diplo_item  = item;
+    g_diplo_stage = 1;
+    g_diplo_nation[0] = '\0';
+    g_diplo_actor = -1;
+    s3_lordpick_set_mode(g_lp, S3_LP_MODE_NATION);
+    s3_lordpick_set_exclude(g_lp, my_lord_name());
+    s3_lordpick_set_diplo_fn(g_lp, diplo_fn, NULL);
+    s3_lordpick_bind(g_lp, g_kd);
+    s3_lordpick_reset(g_lp);
+    s3_lordpick_select(g_lp, -1);
+    lord_stats_fill(NULL);
+    s3_strategy_set_highlight_lord(g_ast, "");
+    s3_admin_set_visible(g_adm, 0);
+    s3_admin_collapse(g_adm);
+    s3_admin_set_hint(g_adm, "");
+    s3_strategy_set_banner(g_ast, item == 0
+        ? "「同盟」：請選擇要同盟的國家（長按返回朝堂）"
+        : "「解盟」：請選擇要解盟的國家（長按返回朝堂）");
+    g_admin_map = 1;                    /* 切到大地图（叠加层画在地图上） */
+    admin_say("%s：請選擇國家（我方 %s 已排除 · 清單顯示友好度與同盟狀態）",
+              item == 0 ? "進入「同盟」" : "進入「解盟」", my_lord_name());
+    printf("diplo start: %s\n", item == 0 ? "ally" : "break");
+    ALOG("diplo start: %s", item == 0 ? "ally" : "break");
+}
+
+/* 国家选定后的下一步 */
+static void diplo_nation_picked(const char *lord) {
+    snprintf(g_diplo_nation, sizeof g_diplo_nation, "%.31s", lord ? lord : "");
+    if (g_diplo_item == 1) {                    /* 解盟：直接进确认 */
+        if (!s3_strategy_is_ally(g_ast, g_diplo_nation)) {
+            admin_say("與 %s 並未同盟，無需解盟", g_diplo_nation);
+            s3_strategy_set_banner(g_ast, "「解盟」：該國未與我方同盟 —— 請另選一國或長按返回");
+            return;
+        }
+        g_diplo_stage = 4;
+        diplo_way_open();
+        s3_strategy_set_banner(g_ast, "「解盟」：請確認（長按返回朝堂）");
+        return;
+    }
+    /* 同盟：已同盟 → 提示；否则选执行者（我方全軍，**不受本月已行动约束**） */
+    if (s3_strategy_is_ally(g_ast, g_diplo_nation)) {
+        admin_say("已與 %s 同盟（友好 %d），無需再談", g_diplo_nation,
+                  s3_strategy_friend(g_ast, g_diplo_nation));
+        s3_strategy_set_banner(g_ast, "「同盟」：該國已是同盟國 —— 請另選一國或長按返回");
+        return;
+    }
+    g_diplo_stage = 2;
+    g_diplo_actor = -1;
+    s3_picker_open(g_picker, g_roster, NULL, "同盟", 0, S3_PICK_MY_ALL_FREE);
+    char b[168];
+    snprintf(b, sizeof b, "「同盟」② 請選擇執行外交的武將/軍師（我方全軍 · 目標 %s）",
+             g_diplo_nation);
+    s3_strategy_set_banner(g_ast, b);
+    printf("diplo ally: nation=%s -> pick actor\n", g_diplo_nation);
+    ALOG("diplo ally: nation=%s -> pick actor", g_diplo_nation);
+}
+
+/* 同盟三方式的执行与判定 */
+static void diplo_execute_ally(int way) {
+    S3Officer *a = (g_diplo_actor >= 0) ? s3_roster_mut(g_roster, g_diplo_actor) : NULL;
+    const char *city = a ? a->city : "";
+    const int prestige = s3_strategy_prestige(g_ast);
+    const int fr0 = s3_strategy_friend(g_ast, g_diplo_nation);
+    int gain = 0;
+    char what[96] = "";
+
+    if (way == 0) {                                  /* ① 贈送寶物 */
+        const S3AppItem *g = best_gift_of_city(city);
+        if (!g) { admin_say("「同盟」：%s 城中沒有可贈送的寶物", city); return; }
+        gain = s3_diplo_gift_gain(g->attraction);
+        if (gain <= 0) { admin_say("「同盟」：該寶物不能作為贈禮"); return; }
+        s3_store_take(g_store, city, g->name, 1);
+        snprintf(what, sizeof what, "贈送寶物「%s」", g->name);
+    } else if (way == 1) {                           /* ② 給予金錢 */
+        S3CityDetail *cd = city_detail_mut_by_name(city);
+        const int money = cd ? (cd->money > 1000 ? 1000 : cd->money) : 0;
+        if (money < 100) { admin_say("「同盟」：%s 金錢不足（需 ≥100，現 %d）", city, money); return; }
+        gain = s3_diplo_money_gain(money);
+        cd->money -= money;
+        snprintf(what, sizeof what, "給予金錢 %d", money);
+    } else {                                         /* ③ 遊說 */
+        gain = s3_diplo_talk_gain(a ? a->intel : 0, prestige);
+        snprintf(what, sizeof what, "遊說");
+    }
+
+    /* 定稿 D1：**失败也加友好度** —— 增量照给 */
+    const int fr1 = s3_friend_clamp(fr0 + gain);
+    s3_strategy_set_friend(g_ast, g_diplo_nation, fr1);
+    s3_strategy_apply_friend(g_ast, g_diplo_nation);
+
+    const int chance = s3_diplo_ally_chance(a ? a->intel : 0, fr1, prestige);
+    const int ok = (chance > 0 && (rand() % 100) < chance) ? 1 : 0;
+    if (ok) s3_strategy_set_ally(g_ast, g_diplo_nation, 1);
+
+    char msg[240];
+    if (ok)
+        snprintf(msg, sizeof msg, "%s · 同盟成立：與 %s 締結盟約（友好 %d→%d · 成功率 %d%%）",
+                 what, g_diplo_nation, fr0, fr1, chance);
+    else if (fr1 < S3_FRIEND_ALLY_MIN)
+        snprintf(msg, sizeof msg, "%s · %s 婉拒（友好 %d→%d，需 ≥%d）—— 失敗也加友好度，再談一次",
+                 what, g_diplo_nation, fr0, fr1, S3_FRIEND_ALLY_MIN);
+    else
+        snprintf(msg, sizeof msg, "%s · %s 暫不考慮（友好 %d→%d · 成功率 %d%%）—— 失敗仍加友好度",
+                 what, g_diplo_nation, fr0, fr1, chance);
+    admin_say("%s", msg);
+    printf("diplo ally: %s friend=%d->%d chance=%d ok=%d prestige=%d\n",
+           g_diplo_nation, fr0, fr1, chance, ok, prestige);
+    ALOG("diplo ally: %s friend=%d->%d chance=%d ok=%d prestige=%d",
+         g_diplo_nation, fr0, fr1, chance, ok, prestige);
+}
+
+/* 解盟（定稿 D2）：友好度→0（敌对）· 威望 −20 · 全体我方武将忠诚 −10 */
+static void diplo_execute_break(void) {
+    const int fr0  = s3_strategy_friend(g_ast, g_diplo_nation);
+    const int pre0 = s3_strategy_prestige(g_ast);
+    s3_strategy_set_ally(g_ast, g_diplo_nation, 0);
+    s3_strategy_set_friend(g_ast, g_diplo_nation, S3_FRIEND_HOSTILE);
+    s3_strategy_apply_friend(g_ast, g_diplo_nation);
+    s3_strategy_set_prestige(g_ast, pre0 - S3_PRESTIGE_BREAK_ALLY);
+    const int n = s3_roster_loyalty_all(g_roster, -S3_DIPLO_BREAK_LOYALTY);
+    admin_say("解盟：與 %s 斷交 —— 友好 %d→0 · 威望 %d→%d · 全軍 %d 人忠誠 −%d",
+              g_diplo_nation, fr0, pre0, s3_strategy_prestige(g_ast), n,
+              S3_DIPLO_BREAK_LOYALTY);
+    printf("diplo break: %s friend=%d->0 prestige=%d->%d loyalty-=%d n=%d\n",
+           g_diplo_nation, fr0, pre0, s3_strategy_prestige(g_ast),
+           S3_DIPLO_BREAK_LOYALTY, n);
+    ALOG("diplo break: %s friend=%d->0 prestige=%d->%d loyalty-=%d n=%d",
+         g_diplo_nation, fr0, pre0, s3_strategy_prestige(g_ast),
+         S3_DIPLO_BREAK_LOYALTY, n);
 }
 
 /* 註：原先这里有个 admin_city_idx()（"选中的城 → 否则我方第一座城"）。
@@ -1395,6 +1722,10 @@ static int admin_cmd_cb(void *ud, int group, int item, const char *label) {
         return 1;
     }
 
+    /* ---- 外交（定稿 D 区，2026-09-28）：**不选城**，直接选国家（叠加层）----
+     * 同盟 = item 0 · 解盟 = item 1（命令名以 Text.ini 7306/7307 为准）。 */
+    if (group == 2) { diplo_start(item == 1 ? 1 : 0); return 1; }
+
     /* ---- 計略（定稿 F1/F2）：三个指令都是"选**非我方**城池"的流程 ----
      * 調査 = 我方全軍任選执行者 → 解锁该城详情，有效期 6 个月
      * 情報 = 在**已调查（有效期内）**的城里点一名武将 → 看其详情（纯查询，不消耗行动）
@@ -1423,7 +1754,7 @@ static int admin_cmd_cb(void *ud, int group, int item, const char *label) {
  *       —— 2026-09-16 用户实测：朝堂用 EXTEND 会镜像出重复柱子、比例别扭，
  *          原版（Winlator 实测截图）就是整图拉伸铺满，照做。
  *   2 = 大地图（素材原生分辨率视口 + COVER + BILINEAR） */
-static int32_t g_vw = 1024, g_vh = 768;    /* 地图视口尺寸（mode 3 进入时计算） */
+/* ⚠ `g_vw` / `g_vh` 的声明已提前到「D 区外交」全局块处（外交浮层命中几何要用） */
 static void apply_present(Sango3Presenter *p, int kind, int32_t cw, int32_t ch) {
     static int cur = -1; static int32_t cur_w = 0, cur_h = 0;
     if (cur == kind && cur_w == cw && cur_h == ch) return;
@@ -1994,6 +2325,7 @@ int main(int argc, char **argv) {
             if (!g_adm) g_adm = s3_admin_new(read_asset_cb, &ctx, draw_text_cb, &fc,
                                             admin_cmd_cb, NULL);
             if (!g_picker) g_picker = s3_picker_new(draw_text_cb, &fc);
+            g_fc = &fc;             /* 外交自绘浮层要用字体上下文（main 里是局部变量） */
             if (!g_oui)    g_oui    = s3_oui_new(draw_text_cb, &fc, read_asset_cb, &ctx);
             if (g_oui) {
                 /* 整备界面要用的静态表（2026-09-23）。必杀技名 = Text.ini 9031~9038
@@ -2100,6 +2432,9 @@ int main(int argc, char **argv) {
                 s3_admin_render(g_adm, cv_map);
                 s3_picker_render(g_picker, cv_map);
                 s3_oui_render(g_oui, cv_map);
+                /* D 区外交叠加层（2026-09-28）：选国家 = 复用大地图版；选方式 = app 自绘浮层 */
+                if (g_diplo_stage == 1)      s3_lordpick_render(g_lp, cv_map);
+                else if (g_diplo_stage >= 3) diplo_way_render(cv_map);
                 sango3_presenter_upload(p, cv_map->px);
             }
             if (sango3_presenter_frame(p, &drawn)) break;
@@ -2181,6 +2516,67 @@ int main(int argc, char **argv) {
                 SDL_Delay(16);
                 continue;
             }
+            /* ---- D 区外交叠加层（2026-09-28）：独占事件（stage 2 = 执行者选择器，走下面那个分支）---- */
+            if (g_diplo_item >= 0 && g_diplo_stage != 2) {
+                static int dw_down = 0;
+                static int32_t dw_x = -1, dw_y = -1;
+                /* ⚠ 本块在 `else if (g_admin_map)` **之前**：diplo_start 靠 `g_admin_map = 1` 切到
+                 * 大地图，若这里直接 continue 会把那一步吞掉（实测：停在朝堂看不到选国家界面）
+                 * → 先把这个切换补齐。 */
+                if (g_admin_map) { g_admin_map = 0; if (court) mode = 4; }
+                if (g_diplo_stage == 1) s3_lordpick_on_move(g_lp, pt_ux, pt_uy);
+                else                    g_dw_hover = diplo_way_hit(pt_ux, pt_uy, NULL);
+                if (pt.rclick) {                      /* 长按/返回 = 取消外交，回朝堂 */
+                    dw_down = 0;
+                    diplo_end();
+                    mode = 5;
+                } else {
+                    if (pt.lclick) { dw_down = 1; dw_x = pt_ux; dw_y = pt_uy; }
+                    if (!pt.ldown && dw_down && !pt.longpress) {
+                        dw_down = 0;
+                        if (g_diplo_stage == 1) {
+                            int idx = -1, ok = 0, cancel = 0;
+                            const int consumed = s3_lordpick_on_click(g_lp, dw_x, dw_y,
+                                                                      &idx, &ok, &cancel);
+                            if (idx >= 0) {
+                                /* 选中国家 → 临时高亮该势力城池（**不改归属**）+ 底部统计 */
+                                const char *lord = s3_kingdom_lord_name(g_kd, idx);
+                                s3_strategy_set_highlight_lord(g_ast, lord);
+                                lord_stats_fill(lord);
+                                s3_strategy_select(g_ast, s3_strategy_first_city_of(g_ast, lord));
+                                char b[168];
+                                snprintf(b, sizeof b,
+                                         "%s（友好 %d · %s）—— 點「決定」確認，長按返回朝堂",
+                                         lord, s3_strategy_friend(g_ast, lord),
+                                         s3_strategy_is_ally(g_ast, lord) ? "已同盟" : "未同盟");
+                                s3_strategy_set_banner(g_ast, b);
+                            } else if (ok) {
+                                const int si = s3_lordpick_selected(g_lp);
+                                if (si >= 0) diplo_nation_picked(s3_kingdom_lord_name(g_kd, si));
+                            } else if (cancel) {
+                                diplo_end();
+                                mode = 5;
+                            } else if (!consumed) {
+                                s3_strategy_on_click(g_ast, dw_x, dw_y);   /* 点地图看城 */
+                            }
+                        } else {                          /* stage 3/4：选方式 / 解盟确认 */
+                            int inside = 0;
+                            const int hit = diplo_way_hit(dw_x, dw_y, &inside);
+                            if (hit == 100) {
+                                diplo_end();
+                                mode = 5;
+                            } else if (hit >= 0) {
+                                if (g_diplo_item == 0) diplo_execute_ally(hit);
+                                else                   diplo_execute_break();
+                                diplo_end();
+                                mode = 5;                 /* 执行完回朝堂看结果 */
+                            }
+                        }
+                    }
+                }
+                SDL_Delay(16);
+                continue;
+            }
             /* ---- 执行者选择界面：激活时独占事件（定稿 A1） ---- */
             if (s3_picker_active(g_picker)) {
                 static int pk_down = 0;
@@ -2188,7 +2584,11 @@ int main(int argc, char **argv) {
                 s3_picker_on_move(g_picker, pt_ux, pt_uy);
                 if (pt.rclick) {                        /* 长按/返回：離間两级时退一级，否则取消命令 */
                     pk_down = 0;                        /* 长按抬起不再算点击 */
-                    if (g_pending_estrange == 2) {
+                    if (g_diplo_item >= 0) {            /* 外交：取消整条外交，回朝堂 */
+                        s3_picker_close(g_picker);
+                        diplo_end();
+                        mode = 5;
+                    } else if (g_pending_estrange == 2) {
                         /* 定稿 F3：从"选执行者"退回"选目标武将"（不结束命令阶段） */
                         const char *cn = s3_strategy_city_name(g_ast, g_pending_city);
                         g_pending_estrange = 1; g_estrange_target = -1;
@@ -2209,7 +2609,14 @@ int main(int argc, char **argv) {
                         pk_down = 0;
                         s3_picker_on_click(g_picker, pk_x, pk_y, &off, &cancel);
                         if (off >= 0) {
-                            if (g_pending_query) {
+                            if (g_diplo_item >= 0 && g_diplo_stage == 2) {
+                                /* D 区外交：执行者已选 → 进"选方式"（同盟） */
+                                g_diplo_actor = off;
+                                g_diplo_stage = 3;
+                                diplo_way_open();
+                                s3_strategy_set_banner(g_ast,
+                                    "「同盟」③ 請選擇方式（贈送寶物 / 給予金錢 / 遊說）");
+                            } else if (g_pending_query) {
                                 /* 定稿 F2「情報」：纯查询 —— 展示该武将详情，
                                  * 不消耗月度行动、不结束命令阶段（可继续看别人） */
                                 admin_show_officer(off);
@@ -2227,7 +2634,8 @@ int main(int argc, char **argv) {
                                 if (actor && tgt) {
                                     const int sim  = s3_personality_similarity(actor->personality,
                                                                                tgt->personality);
-                                    const int prob = s3_recruit_chance(actor, tgt);
+                                    const int prob = s3_recruit_chance(actor, tgt,
+                                                                       s3_strategy_prestige(g_ast));
                                     if (tgt->wild && (rand() % 100) < prob) {
                                         s3_officer_recruit(tgt, cn);
                                         apply_titles(g_roster);   /* 转投后按等级重授官位 */
@@ -2317,7 +2725,10 @@ int main(int argc, char **argv) {
                             }
                             g_pending_city = -1;
                         } else if (cancel) {
-                            if (g_pending_estrange == 2) {
+                            if (g_diplo_item >= 0) {        /* 外交：取消，回朝堂 */
+                                diplo_end();
+                                mode = 5;
+                            } else if (g_pending_estrange == 2) {
                                 /* 離間第二级点「取消」→ 退回第一级（选目标武将） */
                                 const char *cn = s3_strategy_city_name(g_ast, g_pending_city);
                                 g_pending_estrange = 1; g_estrange_target = -1;
